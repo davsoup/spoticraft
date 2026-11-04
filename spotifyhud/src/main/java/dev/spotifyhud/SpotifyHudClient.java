@@ -30,16 +30,14 @@ public final class SpotifyHudClient implements ClientModInitializer {
     public static final String MOD_ID = "spotifyhud";
     private static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
 
-    private static final int GREEN = 0xFF1DB954;
-    private static final int WHITE = 0xFFFFFFFF;
-    private static final int GRAY = 0xFFAAAAAA;
-    private static final int RED = 0xFFFF5555;
-    private static final int PANEL_BG = 0xA0000000;
-    private static final int BAR_BG = 0xFF404040;
-
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
     private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "SpotifyHud-IO");
+        t.setDaemon(true);
+        return t;
+    });
+    private final ExecutorService bg = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "SpotifyHud-BG");
         t.setDaemon(true);
         return t;
     });
@@ -47,17 +45,23 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     private Path configFile;
     private Path tokenFile;
-    private volatile SpotifyConfig config = new SpotifyConfig();
+    static volatile SpotifyHudClient instance;
+    volatile SpotifyConfig config = new SpotifyConfig();
     private volatile SpotifyAuth auth;
     private volatile SpotifyApi api;
 
-    private volatile PlaybackState state = PlaybackState.INACTIVE;
+    volatile PlaybackState state = PlaybackState.INACTIVE;
+    volatile boolean panelFull = false;
+    volatile int panelBottom = 0;
+    private volatile AlbumArt art;
+    private volatile Lyrics lyrics = new Lyrics();
+    private String currentTrack = "";
     private volatile long nextPollAt = 0;
     private volatile long lastCommandAt = 0;
     private volatile String status = "";
     private volatile long statusUntil = 0;
 
-    private KeyMapping loginKey, playPauseKey, nextKey, prevKey, volUpKey, volDownKey, seekFwdKey, seekBackKey, hudKey;
+    private KeyMapping openKey;
 
     @FunctionalInterface
     private interface Action {
@@ -68,21 +72,14 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        instance = this;
         Path dir = FabricLoader.getInstance().getConfigDir();
         configFile = dir.resolve("spotifyhud.json");
         tokenFile = dir.resolve("spotifyhud-token.json");
         reload();
 
         KeyMapping.Category cat = KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MOD_ID, "keys"));
-        loginKey = key("login", 51 /* SEMICOLON */, cat);
-        playPauseKey = key("play_pause", 49 /* BACKSLASH */, cat);
-        nextKey = key("next", 48 /* RIGHT_BRACKET */, cat);
-        prevKey = key("previous", 47 /* LEFT_BRACKET */, cat);
-        volUpKey = key("volume_up", 46 /* EQUAL */, cat);
-        volDownKey = key("volume_down", 45 /* MINUS */, cat);
-        seekFwdKey = key("seek_forward", 55 /* PERIOD */, cat);
-        seekBackKey = key("seek_back", 54 /* COMMA */, cat);
-        hudKey = key("toggle_hud", 52 /* APOSTROPHE */, cat);
+        openKey = key("open_controls", 19 /* P */, cat);
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
 
@@ -100,6 +97,12 @@ public final class SpotifyHudClient implements ClientModInitializer {
                         .then(ClientCommands.literal("reload").executes(c -> {
                             reload();
                             setStatus("Config reloaded", 3000);
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("resetpos").executes(c -> {
+                            config.hudX = 8;
+                            config.hudY = 40;
+                            saveConfig();
                             return 1;
                         }))
                         .then(ClientCommands.literal("pause").executes(c -> {
@@ -146,15 +149,9 @@ public final class SpotifyHudClient implements ClientModInitializer {
     // ------------------------------------------------------------------ tick / polling
 
     private void tick(Minecraft mc) {
-        while (loginKey.consumeClick()) startLogin();
-        while (hudKey.consumeClick()) config.showHud = !config.showHud; // session-only; edit the config to persist
-        while (playPauseKey.consumeClick()) togglePlay();
-        while (nextKey.consumeClick()) skip(true);
-        while (prevKey.consumeClick()) skip(false);
-        while (volUpKey.consumeClick()) changeVolume(config.volumeStep);
-        while (volDownKey.consumeClick()) changeVolume(-config.volumeStep);
-        while (seekFwdKey.consumeClick()) seekBy(config.seekStepSeconds * 1000L);
-        while (seekBackKey.consumeClick()) seekBy(-config.seekStepSeconds * 1000L);
+        while (openKey.consumeClick()) {
+            if (mc.player != null) mc.gui.setScreen(new SpotifyScreen());
+        }
 
         poll(mc);
     }
@@ -170,6 +167,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
                 PlaybackState s = a.getPlayback();
                 // Right after a volume/seek command Spotify may still report the old value; skip that update.
                 if (System.currentTimeMillis() - lastCommandAt > 1500) state = s;
+                trackCheck(s);
             } catch (SpotifyException e) {
                 if (e.retryAfterSeconds > 0) nextPollAt = System.currentTimeMillis() + e.retryAfterSeconds * 1000L;
                 setStatus(e.getMessage(), 4000);
@@ -185,7 +183,21 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     // ------------------------------------------------------------------ actions
 
-    private void startLogin() {
+    boolean needsLogin() {
+        return !config.clientId.isBlank() && !auth.hasLogin();
+    }
+
+    void toggleLyrics() {
+        config.showLyrics = !config.showLyrics;
+        saveConfig();
+    }
+
+    void toggleHud() {
+        config.showHud = !config.showHud;
+        saveConfig();
+    }
+
+    void startLogin() {
         auth.startLogin(msg -> setStatus(msg, 8000));
     }
 
@@ -207,7 +219,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         nextPollAt = now + 1600;
     }
 
-    private void togglePlay() {
+    void togglePlay() {
         if (!requireActive()) return;
         PlaybackState s = state;
         boolean willPlay = !s.playing();
@@ -220,7 +232,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         });
     }
 
-    private void skip(boolean forward) {
+    void skip(boolean forward) {
         if (!requireActive()) return;
         SpotifyApi a = api;
         run(() -> {
@@ -235,7 +247,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         setVolume(state.volumePercent() + delta);
     }
 
-    private void setVolume(int percent) {
+    void setVolume(int percent) {
         if (!requireActive()) return;
         int target = Math.max(0, Math.min(100, percent));
         state = state.withVolume(target);
@@ -249,7 +261,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         seekTo(state.liveProgressMs() + deltaMs);
     }
 
-    private void seekTo(long targetMs) {
+    void seekTo(long targetMs) {
         if (!requireActive()) return;
         PlaybackState s = state;
         long max = s.durationMs() > 0 ? s.durationMs() - 500 : Long.MAX_VALUE;
@@ -288,90 +300,76 @@ public final class SpotifyHudClient implements ClientModInitializer {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
 
+    // ------------------------------------------------------------------ art / lyrics / config
+
+    private synchronized void trackCheck(PlaybackState s) {
+        String key = s.active() ? s.trackKey() : "";
+        if (!key.equals(currentTrack)) {
+            currentTrack = key;
+            AlbumArt a = s.active() && !s.artUrl().isEmpty() ? new AlbumArt(s.artUrl()) : null;
+            if (a != null) a.load(http, bg);
+            art = a;
+            lyrics = new Lyrics();
+        }
+        if (s.active() && config.showLyrics) lyrics.fetch(http, bg, s);
+    }
+
+    void saveConfig() {
+        try {
+            config.save(configFile);
+        } catch (Exception e) {
+            LOG.warn("Could not save config", e);
+        }
+    }
+
     // ------------------------------------------------------------------ HUD
 
     private void renderHud(GuiGraphicsExtractor g, DeltaTracker deltaTracker) {
+        if (!config.showHud) return;
+        if (System.currentTimeMillis() - SpotifyScreen.lastRender < 200) return; // control screen draws it
+        drawHud(g, false, -1, -1);
+    }
+
+    /** Draws the card (or a setup message), lyrics and status line. Used by the HUD and the control screen. */
+    void drawHud(GuiGraphicsExtractor g, boolean interactive, long progOv, int volOv) {
         SpotifyConfig cfg = config;
-        if (!cfg.showHud) return;
-        Minecraft mc = Minecraft.getInstance();
-        Font font = mc.font;
+        Font font = Minecraft.getInstance().font;
         int x = cfg.hudX;
         int y = cfg.hudY;
-        int w = cfg.hudWidth;
-        int lineH = 11;
-
         int bottom;
+        boolean full = false;
+        PlaybackState s = state;
+
         if (cfg.clientId.isBlank()) {
-            bottom = messagePanel(g, font, x, y, w, "Spotify HUD", "Set clientId in", "config/spotifyhud.json",
-                    "then run /spotify reload");
+            bottom = HudPanel.message(g, font, x, y, "Spotify HUD", "Set clientId in",
+                    "config/spotifyhud.json", "then run /spotify reload");
         } else if (!auth.hasLogin()) {
             bottom = auth.isLoginInProgress()
-                    ? messagePanel(g, font, x, y, w, "Spotify HUD", "Waiting for browser login...")
-                    : messagePanel(g, font, x, y, w, "Spotify HUD", "Press the Spotify login key",
-                            "(default ;) or /spotify login");
+                    ? HudPanel.message(g, font, x, y, "Spotify HUD", "Waiting for browser login...")
+                    : HudPanel.message(g, font, x, y, "Spotify HUD", "Press P, then click",
+                            "Log in to Spotify");
+        } else if (!s.active()) {
+            bottom = HudPanel.message(g, font, x, y, "Nothing playing", "Start Spotify on any device");
         } else {
-            PlaybackState s = state;
-            if (!s.active()) {
-                bottom = messagePanel(g, font, x, y, w, "Nothing playing", "Start Spotify on any device");
-            } else {
-                int h = 48;
-                g.fill(x, y, x + w, y + h, PANEL_BG);
-                g.fill(x, y, x + 2, y + h, GREEN);
+            HudPanel.draw(g, font, s, art, x, y, interactive, progOv, volOv);
+            bottom = y + HudPanel.H;
+            full = true;
+        }
+        panelFull = full;
+        panelBottom = bottom;
 
-                int pad = 8;
-                int inner = w - pad - 6;
-                g.text(font, fit(font, s.title().isEmpty() ? "Unknown" : s.title(), inner), x + pad, y + 5, WHITE, true);
-                g.text(font, fit(font, s.artist(), inner), x + pad, y + 5 + lineH, GRAY, false);
-
-                // progress bar
-                int barX = x + pad;
-                int barW = w - pad - 6;
-                int barY = y + 29;
-                long progress = s.liveProgressMs();
-                double frac = s.durationMs() > 0 ? Math.min(1.0, (double) progress / s.durationMs()) : 0.0;
-                g.fill(barX, barY, barX + barW, barY + 3, BAR_BG);
-                g.fill(barX, barY, barX + (int) (barW * frac), barY + 3, GREEN);
-
-                // time + volume row
-                int rowY = y + 35;
-                String left = fmt(progress);
-                String right = fmt(s.durationMs());
-                g.text(font, left, barX, rowY, GRAY, false);
-                g.text(font, right, barX + barW - font.width(right), rowY, GRAY, false);
-                String mid = (s.playing() ? "" : "Paused  ") + (s.volumeSupported() ? "Vol " + s.volumePercent() + "%" : "");
-                if (!mid.isEmpty()) {
-                    g.text(font, mid, barX + (barW - font.width(mid)) / 2, rowY, s.playing() ? GRAY : WHITE, false);
-                }
-                bottom = y + h;
-            }
+        int below = bottom + (interactive ? 40 : 3);
+        boolean hasStatus = System.currentTimeMillis() < statusUntil && !status.isEmpty();
+        if (hasStatus) {
+            HudPanel.status(g, font, status, x, below);
+            below += 11;
         }
 
-        if (System.currentTimeMillis() < statusUntil && !status.isEmpty()) {
-            g.text(font, fit(font, status, w), x, bottom + 3, RED, true);
+        if (full && cfg.showLyrics && lyrics.status == Lyrics.READY) {
+            long p = progOv >= 0 ? progOv : s.liveProgressMs();
+            String[] l = lyrics.around(p);
+            int ly = y >= 30 ? y - 29 : below;
+            HudPanel.lyrics(g, font, l[0], l[1], x, ly);
         }
-    }
-
-    /** Draws a small text-only panel and returns its bottom y. */
-    private int messagePanel(GuiGraphicsExtractor g, Font font, int x, int y, int w, String... lines) {
-        int h = 8 + lines.length * 11;
-        g.fill(x, y, x + w, y + h, PANEL_BG);
-        g.fill(x, y, x + 2, y + h, GREEN);
-        for (int i = 0; i < lines.length; i++) {
-            g.text(font, fit(font, lines[i], w - 14), x + 8, y + 5 + i * 11, i == 0 ? WHITE : GRAY, i == 0);
-        }
-        return y + h;
-    }
-
-    private static String fit(Font font, String s, int maxWidth) {
-        if (font.width(s) <= maxWidth) return s;
-        String ellipsis = "...";
-        int end = s.length();
-        while (end > 0 && font.width(s.substring(0, end) + ellipsis) > maxWidth) end--;
-        return s.substring(0, end) + ellipsis;
-    }
-
-    private static String fmt(long ms) {
-        long total = Math.max(0, ms) / 1000;
-        return (total / 60) + ":" + String.format("%02d", total % 60);
     }
 }

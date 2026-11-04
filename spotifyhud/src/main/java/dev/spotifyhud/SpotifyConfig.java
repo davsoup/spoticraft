@@ -17,9 +17,9 @@ public final class SpotifyConfig {
     public int seekStepSeconds = 10;
     public int pollIntervalMs = 2000;
     public boolean showHud = true;
-    public int hudX = 6;
-    public int hudY = 6;
-    public int hudWidth = 170;
+    public boolean showLyrics = true;
+    public int hudX = 8;
+    public int hudY = 40;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -34,7 +34,6 @@ public final class SpotifyConfig {
             cfg.volumeStep = Math.max(1, cfg.volumeStep);
             cfg.seekStepSeconds = Math.max(1, cfg.seekStepSeconds);
             cfg.pollIntervalMs = Math.max(1000, cfg.pollIntervalMs); // be nice to Spotify's rate limits
-            cfg.hudWidth = Math.max(100, cfg.hudWidth);
             cfg.save(file); // writes defaults on first run, and normalises the file
         } catch (IOException | RuntimeException e) {
             // Broken JSON etc: keep defaults, don't crash the game.

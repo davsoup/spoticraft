@@ -48,6 +48,8 @@ public final class SpotifyApi {
 
         String title = "";
         String artist = "";
+        String album = "";
+        String artUrl = "";
         long duration = 0;
         JsonObject item = obj(o, "item");
         if (item != null) {
@@ -69,11 +71,22 @@ public final class SpotifyApi {
                 JsonObject show = obj(item, "show"); // podcast episode
                 if (show != null) artist = str(show, "name");
             }
+            JsonObject alb = obj(item, "album");
+            if (alb != null) {
+                album = str(alb, "name");
+                artUrl = pickImage(arr(alb, "images"));
+            } else {
+                artUrl = pickImage(arr(item, "images")); // podcast episode
+                if (artUrl.isEmpty()) {
+                    JsonObject show = obj(item, "show");
+                    if (show != null) artUrl = pickImage(arr(show, "images"));
+                }
+            }
         } else if ("ad".equals(str(o, "currently_playing_type"))) {
             title = "Advertisement";
         }
 
-        return new PlaybackState(true, playing, title, artist, progress, duration,
+        return new PlaybackState(true, playing, title, artist, album, artUrl, progress, duration,
                 volume, volumeSupported, System.currentTimeMillis());
     }
 
@@ -157,6 +170,35 @@ public final class SpotifyApi {
             return new SpotifyException(sc, m, 0);
         }
         return new SpotifyException(sc, message.isEmpty() ? "Spotify error " + sc : message, 0);
+    }
+
+    private static JsonArray arr(JsonObject o, String k) {
+        return present(o, k) && o.get(k).isJsonArray() ? o.getAsJsonArray(k) : null;
+    }
+
+    /** Smallest image that is at least 200px wide, else the largest available. */
+    private static String pickImage(JsonArray images) {
+        if (images == null) return "";
+        String best = "";
+        int bestW = Integer.MAX_VALUE;
+        String largest = "";
+        int largestW = -1;
+        for (JsonElement e : images) {
+            if (!e.isJsonObject()) continue;
+            JsonObject i = e.getAsJsonObject();
+            String u = str(i, "url");
+            if (u.isEmpty()) continue;
+            int w = present(i, "width") ? i.get("width").getAsInt() : 0;
+            if (w >= 200 && w < bestW) {
+                bestW = w;
+                best = u;
+            }
+            if (w > largestW) {
+                largestW = w;
+                largest = u;
+            }
+        }
+        return best.isEmpty() ? largest : best;
     }
 
     // ---- null-safe JSON helpers
