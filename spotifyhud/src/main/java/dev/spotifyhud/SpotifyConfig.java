@@ -34,6 +34,24 @@ public final class SpotifyConfig {
     /** Solid background colour (RGB), or -1 to use the cover's colour. */
     public int bgColor = -1;
     public boolean glow = true;
+    /** Shrink title/artist text so it fits instead of scrolling. */
+    public boolean autoFit = false;
+    /** CD style: show title/artist/progress under the disc. */
+    public boolean cdText = true;
+    /** Rounded (true) or square (false) card and box corners. */
+    public boolean rounded = true;
+    /** CD text box: 0 = mograph, 1 = solid, 2 = none. */
+    public int cdBgMode = 1;
+    /** Small SHF / RPT badges when shuffle or repeat is on. */
+    public boolean modeIndicators = true;
+    /** Nudge the album cover inside the block card (-20 .. 20). */
+    public int artOffX = 0;
+    public int artOffY = 0;
+    /** Lyrics size in percent (70 - 200). */
+    public int lyricsScale = 100;
+    /** Lyrics background: 0 = dark, 1 = colour, 2 = mograph, 3 = none. */
+    public int lyricsBgMode = 0;
+    public int lyricsBgColor = -1;
     /** Overall size of the block card (0.5 - 3.0). Drag a corner on the control screen. */
     public float hudScale = 1.0f;
     /** Diameter of the CD in GUI pixels (40 - 220). Drag a corner on the control screen. */
@@ -77,6 +95,11 @@ public final class SpotifyConfig {
             cfg.lyricsOffset = Math.max(-30, Math.min(120, cfg.lyricsOffset));
             cfg.glowSpread = Math.max(4, Math.min(40, cfg.glowSpread));
             cfg.glowSoftness = Math.max(0, Math.min(100, cfg.glowSoftness));
+            cfg.cdBgMode = Math.max(0, Math.min(2, cfg.cdBgMode));
+            cfg.artOffX = Math.max(-20, Math.min(20, cfg.artOffX));
+            cfg.artOffY = Math.max(-20, Math.min(20, cfg.artOffY));
+            cfg.lyricsScale = Math.max(70, Math.min(200, cfg.lyricsScale));
+            cfg.lyricsBgMode = Math.max(0, Math.min(3, cfg.lyricsBgMode));
             cfg.save(file); // writes defaults on first run, and normalises the file
         } catch (IOException | RuntimeException e) {
             // Broken JSON etc: keep defaults, don't crash the game.

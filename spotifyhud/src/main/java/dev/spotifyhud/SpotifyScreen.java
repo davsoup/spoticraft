@@ -69,7 +69,7 @@ public final class SpotifyScreen extends BaseScreen {
 
         int x = cfg.hudX;
         int y = cfg.hudY;
-        int w = c.panelW;
+        int w = Math.max(c.panelW, 150);
 
         if (c.panelFull) {
             int[] r = HudPanel.resizeRect(cfg, x, y);
@@ -116,7 +116,7 @@ public final class SpotifyScreen extends BaseScreen {
         SpotifyConfig cfg = c.config;
         int x = cfg.hudX;
         int y = cfg.hudY;
-        int w = c.panelW;
+        int w = Math.max(c.panelW, 150);
         PlaybackState s = c.state;
 
         if (c.panelFull) {
@@ -188,7 +188,7 @@ public final class SpotifyScreen extends BaseScreen {
             return true;
         }
         int ph = c.panelBottom - y;
-        if (inRect(mx, my, x, y, w, ph)) {
+        if (inRect(mx, my, x, y, c.panelW, ph)) {
             mode = MOVE;
             offX = (int) mx - x;
             offY = (int) my - y;
@@ -205,10 +205,10 @@ public final class SpotifyScreen extends BaseScreen {
         double my = event.y();
         SpotifyConfig cfg = c.config;
         int x = cfg.hudX;
-        int w = c.panelW;
+        int w = Math.max(c.panelW, 150);
         if (mode == MOVE) {
             int ph = c.panelBottom - cfg.hudY;
-            cfg.hudX = clamp((int) mx - offX, 0, Math.max(0, width - w));
+            cfg.hudX = clamp((int) mx - offX, 0, Math.max(0, width - c.panelW));
             cfg.hudY = clamp((int) my - offY, 0, Math.max(0, height - ph - 100));
         } else if (mode == SEEK) {
             seekFrac = HudPanel.barFrac(cfg, mx, x);

@@ -498,6 +498,35 @@ public final class SpotifyHudClient implements ClientModInitializer {
         });
     }
 
+    /** Opens Minecraft's own Controls screen (where the Spotify keybind lives), returning to parent afterwards. */
+    boolean openKeybindScreen(Screen parent) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            Object options = Minecraft.class.getField("options").get(mc);
+            Class<?> cls = null;
+            for (String n : new String[]{"net.minecraft.client.gui.screens.options.controls.KeyBindsScreen",
+                    "net.minecraft.client.gui.screens.controls.KeyBindsScreen"}) {
+                try {
+                    cls = Class.forName(n);
+                    break;
+                } catch (ClassNotFoundException ignored) {
+                }
+            }
+            if (cls == null) throw new ClassNotFoundException("KeyBindsScreen");
+            for (java.lang.reflect.Constructor<?> k : cls.getConstructors()) {
+                Class<?>[] p = k.getParameterTypes();
+                if (p.length == 2 && p[0].isAssignableFrom(Screen.class) && p[1].isInstance(options)) {
+                    mc.gui.setScreen((Screen) k.newInstance(parent, options));
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            LOG.warn("Could not open the Controls screen", t);
+        }
+        setStatus("Change it in Options > Controls > Spotify HUD", 5000);
+        return false;
+    }
+
     void relogin() {
         auth.logout();
         needsScopes = false;
@@ -589,9 +618,10 @@ public final class SpotifyHudClient implements ClientModInitializer {
             boolean showNext = !next.isEmpty() && (cur.isEmpty() ? sn.untilNext() <= 2500 : sn.untilNext() <= 7000);
             if (!showNext) next = "";
             if (!cur.isEmpty() || !next.isEmpty()) {
-                int above = y - 29 - cfg.lyricsOffset;
+                int lh = HudPanel.lyricsHeight(font, cfg, cur, next, w);
+                int above = y - lh - 2 - cfg.lyricsOffset;
                 int ly = above >= 0 ? above : below + Math.max(0, cfg.lyricsOffset);
-                HudPanel.lyrics(g, font, cur, next, x, ly, w, cfg.alignLyrics);
+                HudPanel.lyrics(g, font, cfg, art, cur, next, x, ly, w, cfg.alignLyrics);
             }
         }
     }
