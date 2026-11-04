@@ -16,7 +16,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.resources.Identifier;
-import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,15 +74,15 @@ public final class SpotifyHudClient implements ClientModInitializer {
         reload();
 
         KeyMapping.Category cat = KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MOD_ID, "keys"));
-        loginKey = key("login", GLFW.GLFW_KEY_SEMICOLON, cat);
-        playPauseKey = key("play_pause", GLFW.GLFW_KEY_BACKSLASH, cat);
-        nextKey = key("next", GLFW.GLFW_KEY_RIGHT_BRACKET, cat);
-        prevKey = key("previous", GLFW.GLFW_KEY_LEFT_BRACKET, cat);
-        volUpKey = key("volume_up", GLFW.GLFW_KEY_EQUAL, cat);
-        volDownKey = key("volume_down", GLFW.GLFW_KEY_MINUS, cat);
-        seekFwdKey = key("seek_forward", GLFW.GLFW_KEY_PERIOD, cat);
-        seekBackKey = key("seek_back", GLFW.GLFW_KEY_COMMA, cat);
-        hudKey = key("toggle_hud", GLFW.GLFW_KEY_APOSTROPHE, cat);
+        loginKey = key("login", 51 /* SEMICOLON */, cat);
+        playPauseKey = key("play_pause", 49 /* BACKSLASH */, cat);
+        nextKey = key("next", 48 /* RIGHT_BRACKET */, cat);
+        prevKey = key("previous", 47 /* LEFT_BRACKET */, cat);
+        volUpKey = key("volume_up", 46 /* EQUAL */, cat);
+        volDownKey = key("volume_down", 45 /* MINUS */, cat);
+        seekFwdKey = key("seek_forward", 55 /* PERIOD */, cat);
+        seekBackKey = key("seek_back", 54 /* COMMA */, cat);
+        hudKey = key("toggle_hud", 52 /* APOSTROPHE */, cat);
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
 
@@ -129,9 +128,9 @@ public final class SpotifyHudClient implements ClientModInitializer {
                                         })))));
     }
 
-    private static KeyMapping key(String id, int glfwKey, KeyMapping.Category category) {
+    private static KeyMapping key(String id, int scancode, KeyMapping.Category category) {
         return KeyMappingHelper.registerKeyMapping(
-                new KeyMapping("key." + MOD_ID + "." + id, InputConstants.Type.KEYSYM, glfwKey, category));
+                new KeyMapping("key." + MOD_ID + "." + id, InputConstants.Type.KEYBOARD, scancode, category));
     }
 
     private void reload() {
