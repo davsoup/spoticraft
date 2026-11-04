@@ -53,6 +53,9 @@ public final class SpotifyHudClient implements ClientModInitializer {
     volatile PlaybackState state = PlaybackState.INACTIVE;
     volatile boolean panelFull = false;
     volatile int panelBottom = 0;
+    volatile int panelW = HudPanel.BLOCK_W;
+    static volatile long forceShowUntil = 0;
+    private final java.util.concurrent.ConcurrentLinkedQueue<AlbumArt> toRelease = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile AlbumArt art;
     private volatile Lyrics lyrics = new Lyrics();
     private String currentTrack = "";
@@ -308,10 +311,17 @@ public final class SpotifyHudClient implements ClientModInitializer {
             currentTrack = key;
             AlbumArt a = s.active() && !s.artUrl().isEmpty() ? new AlbumArt(s.artUrl()) : null;
             if (a != null) a.load(http, bg);
+            AlbumArt old = art;
+            if (old != null) toRelease.add(old);
             art = a;
             lyrics = new Lyrics();
         }
         if (s.active() && config.showLyrics) lyrics.fetch(http, bg, s);
+    }
+
+    int accentColor() {
+        AlbumArt a = art;
+        return a != null ? a.accent() : 0xFFFFFFFF;
     }
 
     void saveConfig() {
@@ -325,19 +335,22 @@ public final class SpotifyHudClient implements ClientModInitializer {
     // ------------------------------------------------------------------ HUD
 
     private void renderHud(GuiGraphicsExtractor g, DeltaTracker deltaTracker) {
-        if (!config.showHud) return;
+        if (!config.showHud && System.currentTimeMillis() > forceShowUntil) return;
         if (System.currentTimeMillis() - SpotifyScreen.lastRender < 200) return; // control screen draws it
-        drawHud(g, false, -1, -1);
+        drawHud(g, false, -1);
     }
 
     /** Draws the card (or a setup message), lyrics and status line. Used by the HUD and the control screen. */
-    void drawHud(GuiGraphicsExtractor g, boolean interactive, long progOv, int volOv) {
+    void drawHud(GuiGraphicsExtractor g, boolean interactive, long progOv) {
         SpotifyConfig cfg = config;
         Font font = Minecraft.getInstance().font;
+        AlbumArt dead;
+        while ((dead = toRelease.poll()) != null) dead.release();
         int x = cfg.hudX;
         int y = cfg.hudY;
         int bottom;
         boolean full = false;
+        int w = HudPanel.BLOCK_W;
         PlaybackState s = state;
 
         if (cfg.clientId.isBlank()) {
@@ -351,14 +364,16 @@ public final class SpotifyHudClient implements ClientModInitializer {
         } else if (!s.active()) {
             bottom = HudPanel.message(g, font, x, y, "Nothing playing", "Start Spotify on any device");
         } else {
-            HudPanel.draw(g, font, s, art, x, y, interactive, progOv, volOv);
-            bottom = y + HudPanel.H;
+            HudPanel.Layout L = HudPanel.draw(g, font, cfg, s, art, x, y, interactive, progOv);
+            bottom = y + L.h();
+            w = L.w();
             full = true;
         }
         panelFull = full;
         panelBottom = bottom;
+        panelW = w;
 
-        int below = bottom + (interactive ? 40 : 3);
+        int below = bottom + (interactive ? 76 : 3);
         boolean hasStatus = System.currentTimeMillis() < statusUntil && !status.isEmpty();
         if (hasStatus) {
             HudPanel.status(g, font, status, x, below);

@@ -8,15 +8,15 @@ import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 /**
- * Control screen (default key O). The mouse cursor is free here, so you can drag the HUD around,
- * click/drag the progress bar to seek and the volume bar to set volume.
+ * Control screen (key P). The cursor is free here: drag the card to move it, click/drag the bars to
+ * seek or set volume, use the buttons for everything else.
  */
 public final class SpotifyScreen extends Screen {
     /** Last time this screen drew; the normal HUD hides itself while this is fresh. */
     static volatile long lastRender = 0;
 
     private static final int NONE = 0, MOVE = 1, SEEK = 2, VOL = 3;
-    private static final int BTN_W = 36, BTN_H = 14, BTN_GAP = 6, TOG_W = 97;
+    private static final int BTN_W = 36, BTN_H = 14, BTN_GAP = 6;
 
     private int mode = NONE;
     private int offX, offY;
@@ -26,6 +26,24 @@ public final class SpotifyScreen extends Screen {
 
     public SpotifyScreen() {
         super(Component.literal("Spotify"));
+    }
+
+    // row i below the card: 0 volume/login, 1 playback, 2 lyrics+hud, 3 style+customize
+    private static int rowY(SpotifyHudClient c, int i) {
+        return c.panelBottom + 4 + 18 * i;
+    }
+
+    private static boolean inRect(double mx, double my, int x, int y, int w, int h) {
+        return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
+    private static int buttonX(int panelX, int w, int i) {
+        int total = 3 * BTN_W + 2 * BTN_GAP;
+        return panelX + (w - total) / 2 + i * (BTN_W + BTN_GAP);
+    }
+
+    private static int halfW(int w) {
+        return (w - BTN_GAP) / 2;
     }
 
     @Override
@@ -38,46 +56,39 @@ public final class SpotifyScreen extends Screen {
 
         PlaybackState s = c.state;
         long progOv = mode == SEEK ? (long) (seekFrac * s.durationMs()) : -1;
-        int volOv = mode == VOL ? volPct : -1;
-        c.drawHud(g, true, progOv, volOv);
+        c.drawHud(g, true, progOv);
 
-        int x = c.config.hudX;
-        int y = c.config.hudY;
-        int bottom = c.panelBottom;
+        SpotifyConfig cfg = c.config;
+        int x = cfg.hudX;
+        int w = c.panelW;
+
         if (c.panelFull) {
-            int by = bottom + 4;
+            if (s.volumeSupported()) {
+                HudPanel.volumeRow(g, font, x, rowY(c, 0), w, mode == VOL ? volPct : s.volumePercent());
+            }
+            int by = rowY(c, 1);
             String[] labels = {"|<", s.playing() ? "||" : ">", ">|"};
             for (int i = 0; i < 3; i++) {
-                int bx = buttonX(x, i);
-                boolean hover = mouseX >= bx && mouseX < bx + BTN_W && mouseY >= by && mouseY < by + BTN_H;
-                HudPanel.button(g, font, labels[i], bx, by, BTN_W, BTN_H, hover);
+                int bx = buttonX(x, w, i);
+                HudPanel.button(g, font, labels[i], bx, by, BTN_W, BTN_H, inRect(mouseX, mouseY, bx, by, BTN_W, BTN_H));
             }
         }
         if (c.needsLogin()) {
-            int by = bottom + 4;
-            boolean hover = inRect(mouseX, mouseY, x, by, HudPanel.W, BTN_H);
-            HudPanel.button(g, font, "Log in to Spotify", x, by, HudPanel.W, BTN_H, hover);
+            int by = rowY(c, 0);
+            HudPanel.button(g, font, "Log in to Spotify", x, by, w, BTN_H, inRect(mouseX, mouseY, x, by, w, BTN_H));
         }
-        int ty = toggleY(c);
-        boolean h1 = inRect(mouseX, mouseY, x, ty, TOG_W, BTN_H);
-        boolean h2 = inRect(mouseX, mouseY, x + TOG_W + BTN_GAP, ty, TOG_W, BTN_H);
-        HudPanel.button(g, font, "Lyrics: " + (c.config.showLyrics ? "On" : "Off"), x, ty, TOG_W, BTN_H, h1);
-        HudPanel.button(g, font, "HUD: " + (c.config.showHud ? "On" : "Off"), x + TOG_W + BTN_GAP, ty, TOG_W, BTN_H, h2);
+        int hw = halfW(w);
+        int r2 = rowY(c, 2);
+        int r3 = rowY(c, 3);
+        HudPanel.button(g, font, "Lyrics: " + (cfg.showLyrics ? "On" : "Off"), x, r2, hw, BTN_H, inRect(mouseX, mouseY, x, r2, hw, BTN_H));
+        HudPanel.button(g, font, "HUD: " + (cfg.showHud ? "On" : "Off"), x + hw + BTN_GAP, r2, hw, BTN_H,
+                inRect(mouseX, mouseY, x + hw + BTN_GAP, r2, hw, BTN_H));
+        HudPanel.button(g, font, "Style: " + (cfg.style == 0 ? "Block" : "CD"), x, r3, hw, BTN_H, inRect(mouseX, mouseY, x, r3, hw, BTN_H));
+        HudPanel.button(g, font, "Customize", x + hw + BTN_GAP, r3, hw, BTN_H,
+                inRect(mouseX, mouseY, x + hw + BTN_GAP, r3, hw, BTN_H));
+
         String hint = "Drag the card to move it  |  click or drag the bars  |  Esc to close";
         g.text(font, hint, (width - font.width(hint)) / 2, height - 14, 0xFFCCCCCC, true);
-    }
-
-    private static boolean inRect(double mx, double my, int x, int y, int w, int h) {
-        return mx >= x && mx < x + w && my >= y && my < y + h;
-    }
-
-    private static int toggleY(SpotifyHudClient c) {
-        return c.panelBottom + (c.panelFull || c.needsLogin() ? 22 : 4);
-    }
-
-    private static int buttonX(int panelX, int i) {
-        int total = 3 * BTN_W + 2 * BTN_GAP;
-        return panelX + (HudPanel.W - total) / 2 + i * (BTN_W + BTN_GAP);
     }
 
     @Override
@@ -86,26 +97,29 @@ public final class SpotifyScreen extends Screen {
         if (c == null) return super.mouseClicked(event, doubleClick);
         double mx = event.x();
         double my = event.y();
-        int x = c.config.hudX;
-        int y = c.config.hudY;
+        SpotifyConfig cfg = c.config;
+        int x = cfg.hudX;
+        int y = cfg.hudY;
+        int w = c.panelW;
         PlaybackState s = c.state;
 
         if (c.panelFull) {
-            if (HudPanel.inBar(mx, my, x, y)) {
+            HudPanel.Layout L = HudPanel.layout(cfg);
+            if (HudPanel.inBar(L, mx, my, x, y)) {
                 mode = SEEK;
-                seekFrac = HudPanel.barFrac(mx, x);
+                seekFrac = HudPanel.barFrac(L, mx, x);
                 return true;
             }
-            if (s.volumeSupported() && HudPanel.inVol(mx, my, x, y)) {
+            if (s.volumeSupported() && HudPanel.inVolume(mx, my, x, rowY(c, 0), w)) {
                 mode = VOL;
-                volPct = (int) Math.round(HudPanel.volFrac(mx, x) * 100);
+                volPct = (int) Math.round(HudPanel.volFrac(mx, x, w) * 100);
                 sendVolume(c, false);
                 return true;
             }
-            int by = c.panelBottom + 4;
+            int by = rowY(c, 1);
             if (my >= by && my < by + BTN_H) {
                 for (int i = 0; i < 3; i++) {
-                    int bx = buttonX(x, i);
+                    int bx = buttonX(x, w, i);
                     if (mx >= bx && mx < bx + BTN_W) {
                         if (i == 0) c.skip(false);
                         else if (i == 1) c.togglePlay();
@@ -115,20 +129,33 @@ public final class SpotifyScreen extends Screen {
                 }
             }
         }
-        if (c.needsLogin() && inRect(mx, my, x, c.panelBottom + 4, HudPanel.W, BTN_H)) {
+        if (c.needsLogin() && inRect(mx, my, x, rowY(c, 0), w, BTN_H)) {
             c.startLogin();
             return true;
         }
-        int ty = toggleY(c);
-        if (inRect(mx, my, x, ty, TOG_W, BTN_H)) {
+        int hw = halfW(w);
+        int r2 = rowY(c, 2);
+        int r3 = rowY(c, 3);
+        if (inRect(mx, my, x, r2, hw, BTN_H)) {
             c.toggleLyrics();
             return true;
         }
-        if (inRect(mx, my, x + TOG_W + BTN_GAP, ty, TOG_W, BTN_H)) {
+        if (inRect(mx, my, x + hw + BTN_GAP, r2, hw, BTN_H)) {
             c.toggleHud();
             return true;
         }
-        if (mx >= x && mx <= x + HudPanel.W && my >= y && my <= y + HudPanel.H) {
+        if (inRect(mx, my, x, r3, hw, BTN_H)) {
+            cfg.style = cfg.style == 0 ? 1 : 0;
+            c.saveConfig();
+            return true;
+        }
+        if (inRect(mx, my, x + hw + BTN_GAP, r3, hw, BTN_H)) {
+            c.saveConfig();
+            Minecraft.getInstance().gui.setScreen(new SpotifyCustomizeScreen());
+            return true;
+        }
+        int ph = c.panelBottom - y;
+        if (inRect(mx, my, x, y, w, ph)) {
             mode = MOVE;
             offX = (int) mx - x;
             offY = (int) my - y;
@@ -142,14 +169,17 @@ public final class SpotifyScreen extends Screen {
         SpotifyHudClient c = SpotifyHudClient.instance;
         if (c == null || mode == NONE) return super.mouseDragged(event, dragX, dragY);
         double mx = event.x();
-        int x = c.config.hudX;
+        SpotifyConfig cfg = c.config;
+        int x = cfg.hudX;
+        int w = c.panelW;
         if (mode == MOVE) {
-            c.config.hudX = clamp((int) event.x() - offX, 0, Math.max(0, width - HudPanel.W));
-            c.config.hudY = clamp((int) event.y() - offY, 0, Math.max(0, height - HudPanel.H - 44));
+            int ph = c.panelBottom - cfg.hudY;
+            cfg.hudX = clamp((int) event.x() - offX, 0, Math.max(0, width - w));
+            cfg.hudY = clamp((int) event.y() - offY, 0, Math.max(0, height - ph - 80));
         } else if (mode == SEEK) {
-            seekFrac = HudPanel.barFrac(mx, x);
+            seekFrac = HudPanel.barFrac(HudPanel.layout(cfg), mx, x);
         } else if (mode == VOL) {
-            volPct = (int) Math.round(HudPanel.volFrac(mx, x) * 100);
+            volPct = (int) Math.round(HudPanel.volFrac(mx, x, w) * 100);
             sendVolume(c, false);
         }
         return true;
