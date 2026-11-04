@@ -3,7 +3,6 @@ package dev.spotifyhud;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
@@ -12,10 +11,10 @@ import java.util.List;
 import java.util.function.IntConsumer;
 
 /** Customization menu: layout style, text, background, glow and colours. The HUD stays visible next to it. */
-public final class SpotifyCustomizeScreen extends Screen {
+public final class SpotifyCustomizeScreen extends BaseScreen {
     private static final int[] PRESETS = {-1, 0xFFFFFF, 0xFF4D4D, 0xFF9F43, 0xFFE066, 0x5EE08A, 0x4DE1E8, 0x5B8CFF, 0xA66BFF, 0xFF6BD6};
     private static final String[] PRESET_NAMES = {"Album", "White", "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink"};
-    private static final String[] COLOR_NAMES = {"Text", "Bars", "Glow", "Solid bg"};
+    private static final String[] COLOR_NAMES = {"Text", "Bars", "Glow color", "Solid bg"};
     private static final String[] ALIGN = {"Left", "Center", "Right"};
     private static final String[] BG = {"Spill", "Solid", "Off"};
 
@@ -71,6 +70,9 @@ public final class SpotifyCustomizeScreen extends Screen {
 
     // ------------------------------------------------------------ controls
 
+    private static final int[] COLOR_ROW = {5, 6, 1, 7}; // right-column row of each colour (text, bars, glow, bg)
+    private static final int MENU_ROWS = 10;
+
     private List<Ctl> build(SpotifyHudClient c) {
         SpotifyConfig cfg = c.config;
         List<Ctl> out = new ArrayList<>();
@@ -87,30 +89,30 @@ public final class SpotifyCustomizeScreen extends Screen {
             if (cfg.style == 1) cfg.alignCd = (cfg.alignCd + 1) % 3;
             else cfg.alignBlock = (cfg.alignBlock + 1) % 3;
         }));
-        out.add(slider(id++, lx, top + ROW_H * 2, "Title size", "%", 100, 200, Math.round(cfg.titleScale * 100),
+        out.add(button(id++, lx, top + ROW_H * 2, "Lyrics align: " + ALIGN[cfg.alignLyrics],
+                () -> cfg.alignLyrics = (cfg.alignLyrics + 1) % 3));
+        out.add(slider(id++, lx, top + ROW_H * 3, "Title size", "%", 100, 200, Math.round(cfg.titleScale * 100),
                 v -> cfg.titleScale = v / 100f));
-        out.add(button(id++, lx, top + ROW_H * 3, "Background: " + BG[cfg.bgMode], () -> cfg.bgMode = (cfg.bgMode + 1) % 3));
-        out.add(slider(id++, lx, top + ROW_H * 4, "Darkness", "%", 0, 80, cfg.bgDarkness, v -> cfg.bgDarkness = v));
-        out.add(button(id++, lx, top + ROW_H * 5, "Motion: " + (cfg.motion ? "On" : "Off"), () -> cfg.motion = !cfg.motion));
-        out.add(button(id++, lx, top + ROW_H * 6, "Glow: " + (cfg.glow ? "On" : "Off"), () -> cfg.glow = !cfg.glow));
-        out.add(slider(id++, lx, top + ROW_H * 7, "Glow strength", "%", 10, 100, cfg.glowStrength, v -> cfg.glowStrength = v));
+        out.add(slider(id++, lx, top + ROW_H * 4, "Lyrics distance", "", -30, 120, cfg.lyricsOffset, v -> cfg.lyricsOffset = v));
+        out.add(button(id++, lx, top + ROW_H * 5, "Background: " + BG[cfg.bgMode], () -> cfg.bgMode = (cfg.bgMode + 1) % 3));
+        out.add(slider(id++, lx, top + ROW_H * 6, "Darkness", "%", 0, 80, cfg.bgDarkness, v -> cfg.bgDarkness = v));
+        out.add(button(id++, lx, top + ROW_H * 7, "Motion: " + (cfg.motion ? "On" : "Off"), () -> cfg.motion = !cfg.motion));
 
-        // ---- right column: colour rows
-        for (int i = 0; i < 4; i++) {
-            final int row = i;
-            int col = getColor(cfg, i);
-            Ctl b = button(id++, rx, top + ROW_H * i, COLOR_NAMES[i] + ": " + colorName(col), () -> {
-                selected = row;
-                setColor(cfg, row, nextPreset(getColor(cfg, row)));
-            });
-            b.swatch = col;
-            out.add(b);
-        }
+        // ---- right column: glow, then colours
+        out.add(button(id++, rx, top, "Glow: " + (cfg.glow ? "On" : "Off"), () -> cfg.glow = !cfg.glow));
+        out.add(colorButton(id++, rx, top + ROW_H, cfg, 2));
+        out.add(slider(id++, rx, top + ROW_H * 2, "Intensity", "%", 0, 100, cfg.glowStrength, v -> cfg.glowStrength = v));
+        out.add(slider(id++, rx, top + ROW_H * 3, "Spread", "", 4, 40, cfg.glowSpread, v -> cfg.glowSpread = v));
+        out.add(slider(id++, rx, top + ROW_H * 4, "Softness", "%", 0, 100, cfg.glowSoftness, v -> cfg.glowSoftness = v));
+        out.add(colorButton(id++, rx, top + ROW_H * 5, cfg, 0));
+        out.add(colorButton(id++, rx, top + ROW_H * 6, cfg, 1));
+        out.add(colorButton(id++, rx, top + ROW_H * 7, cfg, 3));
+
         Ctl label = new Ctl();
         label.id = id++;
-        label.x = rx;
-        label.y = top + ROW_H * 4;
-        label.w = COL_W;
+        label.x = lx;
+        label.y = top + ROW_H * 8 + 3;
+        label.w = MENU_W - 12;
         label.plain = true;
         label.label = "Custom colour: " + COLOR_NAMES[selected];
         out.add(label);
@@ -120,17 +122,29 @@ public final class SpotifyCustomizeScreen extends Screen {
         String[] chan = {"Red", "Green", "Blue"};
         for (int k = 0; k < 3; k++) {
             final int shift = 16 - 8 * k;
-            out.add(slider(id++, rx, top + ROW_H * (5 + k), chan[k], "", 0, 255, (rgb >> shift) & 0xFF, v -> {
+            Ctl sl = slider(id++, lx + k * 98, top + ROW_H * 9, chan[k], "", 0, 255, (rgb >> shift) & 0xFF, v -> {
                 int base = getColor(cfg, selected);
                 if (base < 0) base = 0xFFFFFF;
                 setColor(cfg, selected, (base & ~(0xFF << shift)) | (v << shift));
-            }));
+            });
+            sl.w = 92;
+            out.add(sl);
         }
 
-        Ctl done = button(id++, menuX + 6, top + ROW_H * 8 + 2, "Done", this::onClose);
+        Ctl done = button(id++, menuX + 6, top + ROW_H * 10 + 2, "Done", this::onClose);
         done.w = MENU_W - 12;
         out.add(done);
         return out;
+    }
+
+    private Ctl colorButton(int id, int x, int y, SpotifyConfig cfg, int which) {
+        int col = getColor(cfg, which);
+        Ctl b = button(id, x, y, COLOR_NAMES[which] + ": " + colorName(col), () -> {
+            selected = which;
+            setColor(cfg, which, nextPreset(getColor(cfg, which)));
+        });
+        b.swatch = col;
+        return b;
     }
 
     private Ctl button(int id, int x, int y, String label, Runnable click) {
@@ -164,7 +178,7 @@ public final class SpotifyCustomizeScreen extends Screen {
     }
 
     private void place(SpotifyHudClient c) {
-        int menuH = 16 + ROW_H * 8 + 2 + CTL_H + 6;
+        int menuH = 16 + ROW_H * 10 + 2 + CTL_H + 6;
         int hudCx = c.config.hudX + c.panelW / 2;
         menuX = hudCx < width / 2 ? width - MENU_W - 10 : 10;
         menuY = Math.max(6, (height - menuH) / 2);
@@ -179,7 +193,7 @@ public final class SpotifyCustomizeScreen extends Screen {
         SpotifyHudClient.forceShowUntil = System.currentTimeMillis() + 300; // keep the HUD visible as a live preview
         place(c);
         Font font = Minecraft.getInstance().font;
-        int menuH = 16 + ROW_H * 8 + 2 + CTL_H + 6;
+        int menuH = 16 + ROW_H * 10 + 2 + CTL_H + 6;
         HudPanel.round(g, menuX, menuY, MENU_W, menuH, 0xE0101010);
         g.text(font, "Customize", menuX + 8, menuY + 5, 0xFFFFFFFF, true);
 
@@ -201,7 +215,7 @@ public final class SpotifyCustomizeScreen extends Screen {
             }
         }
         // highlight the colour row being edited
-        int sy = menuY + 16 + ROW_H * selected;
+        int sy = menuY + 16 + ROW_H * COLOR_ROW[selected];
         int sx = menuX + 6 + COL_W + 8;
         g.fill(sx - 3, sy + 2, sx - 1, sy + CTL_H - 2, 0xFFFFFFFF);
     }

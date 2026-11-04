@@ -56,6 +56,28 @@ final class Lyrics {
         });
     }
 
+    record Snap(String cur, String next, long untilNext, long sinceCur) {
+    }
+
+    /** Current and next line for a playback position, plus timing so the HUD can decide what to show. */
+    Snap at(long ms) {
+        List<Line> l = lines;
+        int idx = -1;
+        for (int i = 0; i < l.size(); i++) {
+            if (l.get(i).ms() <= ms) idx = i;
+            else break;
+        }
+        String cur = idx >= 0 ? l.get(idx).text() : "";
+        long since = idx >= 0 ? ms - l.get(idx).ms() : 0;
+        String next = "";
+        long until = Long.MAX_VALUE;
+        if (idx + 1 < l.size()) {
+            next = l.get(idx + 1).text();
+            until = l.get(idx + 1).ms() - ms;
+        }
+        return new Snap(cur, next, until, since);
+    }
+
     /** Returns {current, next} lines for the given playback position (either may be empty). */
     String[] around(long ms) {
         List<Line> l = lines;

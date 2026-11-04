@@ -2,6 +2,7 @@ package dev.spotifyhud;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
@@ -15,6 +16,7 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,6 +57,23 @@ public final class SpotifyHudClient implements ClientModInitializer {
     volatile int panelBottom = 0;
     volatile int panelW = HudPanel.BLOCK_W;
     static volatile long forceShowUntil = 0;
+    // browser data
+    volatile java.util.List<SpotifyApi.Item> queueItems = java.util.List.of();
+    volatile java.util.List<SpotifyApi.Item> playlistItems = java.util.List.of();
+    volatile java.util.List<SpotifyApi.Item> likedItems = java.util.List.of();
+    volatile java.util.List<SpotifyApi.Item> searchItems = java.util.List.of();
+    volatile boolean browserLoading = false;
+    volatile String browserNote = "";
+    volatile boolean needsScopes = false;
+    private volatile Screen pendingScreen;
+
+    // track-change slide transition
+    private volatile PlaybackState lastFull;
+    private volatile PlaybackState prevState;
+    private volatile AlbumArt prevArt;
+    private volatile long transStart = 0;
+    private static final long TRANSITION_NS = 450_000_000L;
+
     private final java.util.concurrent.ConcurrentLinkedQueue<AlbumArt> toRelease = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile AlbumArt art;
     private volatile Lyrics lyrics = new Lyrics();
@@ -102,6 +121,24 @@ public final class SpotifyHudClient implements ClientModInitializer {
                             setStatus("Config reloaded", 3000);
                             return 1;
                         }))
+                        .then(ClientCommands.literal("search")
+                                .then(ClientCommands.argument("query", StringArgumentType.greedyString())
+                                        .executes(c -> {
+                                            searchAnd(StringArgumentType.getString(c, "query"), 0);
+                                            return 1;
+                                        })))
+                        .then(ClientCommands.literal("queue")
+                                .then(ClientCommands.argument("query", StringArgumentType.greedyString())
+                                        .executes(c -> {
+                                            searchAnd(StringArgumentType.getString(c, "query"), 1);
+                                            return 1;
+                                        })))
+                        .then(ClientCommands.literal("play")
+                                .then(ClientCommands.argument("query", StringArgumentType.greedyString())
+                                        .executes(c -> {
+                                            searchAnd(StringArgumentType.getString(c, "query"), 2);
+                                            return 1;
+                                        })))
                         .then(ClientCommands.literal("resetpos").executes(c -> {
                             config.hudX = 8;
                             config.hudY = 40;
@@ -152,6 +189,11 @@ public final class SpotifyHudClient implements ClientModInitializer {
     // ------------------------------------------------------------------ tick / polling
 
     private void tick(Minecraft mc) {
+        Screen ps = pendingScreen;
+        if (ps != null && mc.player != null) {
+            pendingScreen = null;
+            mc.gui.setScreen(ps);
+        }
         while (openKey.consumeClick()) {
             if (mc.player != null) mc.gui.setScreen(new SpotifyScreen());
         }
@@ -264,6 +306,24 @@ public final class SpotifyHudClient implements ClientModInitializer {
         seekTo(state.liveProgressMs() + deltaMs);
     }
 
+    void toggleShuffle() {
+        if (!requireActive()) return;
+        boolean on = !state.shuffle();
+        state = state.withShuffle(on);
+        protectFromPoll();
+        SpotifyApi a = api;
+        run(() -> a.setShuffle(on));
+    }
+
+    void cycleRepeat() {
+        if (!requireActive()) return;
+        int mode = (state.repeat() + 1) % 3;
+        state = state.withRepeat(mode);
+        protectFromPoll();
+        SpotifyApi a = api;
+        run(() -> a.setRepeat(mode));
+    }
+
     void seekTo(long targetMs) {
         if (!requireActive()) return;
         PlaybackState s = state;
@@ -308,15 +368,140 @@ public final class SpotifyHudClient implements ClientModInitializer {
     private synchronized void trackCheck(PlaybackState s) {
         String key = s.active() ? s.trackKey() : "";
         if (!key.equals(currentTrack)) {
+            boolean hadTrack = !currentTrack.isEmpty();
             currentTrack = key;
             AlbumArt a = s.active() && !s.artUrl().isEmpty() ? new AlbumArt(s.artUrl()) : null;
             if (a != null) a.load(http, bg);
             AlbumArt old = art;
-            if (old != null) toRelease.add(old);
+            AlbumArt stale = prevArt;
+            if (stale != null) toRelease.add(stale);
+            PlaybackState was = lastFull;
+            if (hadTrack && s.active() && was != null) {
+                prevState = was;
+                prevArt = old;
+                transStart = System.nanoTime();
+            } else {
+                prevState = null;
+                prevArt = null;
+                if (old != null) toRelease.add(old);
+            }
             art = a;
             lyrics = new Lyrics();
         }
         if (s.active() && config.showLyrics) lyrics.fetch(http, bg, s);
+    }
+
+    // ------------------------------------------------------------------ browser / queue
+
+    void openBrowser(int tab) {
+        loadTab(tab, tab == 0);
+        pendingScreen = new SpotifyBrowserScreen(tab);
+    }
+
+    java.util.List<SpotifyApi.Item> browserItems(int tab) {
+        return switch (tab) {
+            case 0 -> queueItems;
+            case 1 -> playlistItems;
+            case 2 -> likedItems;
+            default -> searchItems;
+        };
+    }
+
+    void loadTab(int tab, boolean force) {
+        if (tab == 3) return; // search results come from /spotify search
+        if (!force && !browserItems(tab).isEmpty()) return;
+        if (!auth.hasLogin()) {
+            browserNote = "Not logged in";
+            return;
+        }
+        SpotifyApi a = api;
+        browserLoading = true;
+        browserNote = "";
+        io.execute(() -> {
+            try {
+                java.util.List<SpotifyApi.Item> list = switch (tab) {
+                    case 0 -> a.getQueue();
+                    case 1 -> a.getPlaylists();
+                    default -> a.getLiked();
+                };
+                if (tab == 0) queueItems = list;
+                else if (tab == 1) playlistItems = list;
+                else likedItems = list;
+            } catch (SpotifyException e) {
+                if (e.status == 403 && e.getMessage().contains("permission")) needsScopes = true;
+                browserNote = e.getMessage();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                browserNote = "Spotify: " + describe(e);
+            } finally {
+                browserLoading = false;
+            }
+        });
+    }
+
+    /** mode: 0 = show results, 1 = queue the top result, 2 = play the top result. */
+    void searchAnd(String query, int mode) {
+        if (!auth.hasLogin()) {
+            setStatus("Not logged in - press P, then Log in", 4000);
+            return;
+        }
+        SpotifyApi a = api;
+        setStatus("Searching...", 3000);
+        io.execute(() -> {
+            try {
+                java.util.List<SpotifyApi.Item> res = a.searchTracks(query);
+                searchItems = res;
+                if (res.isEmpty()) {
+                    setStatus("No results for \"" + query + "\"", 4000);
+                    return;
+                }
+                SpotifyApi.Item top = res.get(0);
+                if (mode == 1) {
+                    a.queueTrack(top.uri());
+                    setStatus("Queued: " + top.name(), 4000);
+                } else if (mode == 2) {
+                    a.playTrack(top.uri());
+                    nextPollAt = System.currentTimeMillis() + 600;
+                    setStatus("Playing: " + top.name(), 4000);
+                } else {
+                    browserNote = "";
+                    pendingScreen = new SpotifyBrowserScreen(3);
+                }
+            } catch (SpotifyException e) {
+                if (e.status == 403 && e.getMessage().contains("permission")) needsScopes = true;
+                setStatus(e.getMessage(), 4000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                setStatus("Spotify: " + describe(e), 4000);
+            }
+        });
+    }
+
+    void playItem(SpotifyApi.Item it) {
+        SpotifyApi a = api;
+        setStatus("Playing: " + it.name(), 3000);
+        run(() -> {
+            if (it.track()) a.playTrack(it.uri());
+            else a.playContext(it.uri());
+            nextPollAt = System.currentTimeMillis() + 600;
+        });
+    }
+
+    void queueItem(SpotifyApi.Item it) {
+        SpotifyApi a = api;
+        setStatus("Queued: " + it.name(), 3000);
+        run(() -> {
+            a.queueTrack(it.uri());
+            queueItems = java.util.List.of(); // reload next time the queue tab opens
+        });
+    }
+
+    void relogin() {
+        auth.logout();
+        needsScopes = false;
+        startLogin();
     }
 
     int accentColor() {
@@ -364,16 +549,31 @@ public final class SpotifyHudClient implements ClientModInitializer {
         } else if (!s.active()) {
             bottom = HudPanel.message(g, font, x, y, "Nothing playing", "Start Spotify on any device");
         } else {
-            HudPanel.Layout L = HudPanel.draw(g, font, cfg, s, art, x, y, interactive, progOv);
-            bottom = y + L.h();
-            w = L.w();
+            PlaybackState oldS = prevState;
+            AlbumArt oldArt = prevArt;
+            double p = 1.0;
+            if (oldS != null) {
+                p = (System.nanoTime() - transStart) / (double) TRANSITION_NS;
+                if (p >= 1.0) {
+                    if (oldArt != null) toRelease.add(oldArt);
+                    prevState = null;
+                    prevArt = null;
+                    oldS = null;
+                    oldArt = null;
+                }
+            }
+            HudPanel.render(g, font, cfg, s, art, x, y, interactive, progOv, oldS, oldArt, p);
+            lastFull = s;
+            int[] R = HudPanel.cardRect(cfg, x, y);
+            bottom = y + R[3];
+            w = R[2];
             full = true;
         }
         panelFull = full;
         panelBottom = bottom;
         panelW = w;
 
-        int below = bottom + (interactive ? 76 : 3);
+        int below = bottom + (interactive ? 94 : 3);
         boolean hasStatus = System.currentTimeMillis() < statusUntil && !status.isEmpty();
         if (hasStatus) {
             HudPanel.status(g, font, status, x, below);
@@ -382,9 +582,17 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
         if (full && cfg.showLyrics && lyrics.status == Lyrics.READY) {
             long p = progOv >= 0 ? progOv : s.liveProgressMs();
-            String[] l = lyrics.around(p);
-            int ly = y >= 30 ? y - 29 : below;
-            HudPanel.lyrics(g, font, l[0], l[1], x, ly);
+            Lyrics.Snap sn = lyrics.at(p);
+            String cur = sn.cur();
+            if (!cur.isEmpty() && sn.sinceCur() > 10000 && sn.untilNext() > 3000) cur = ""; // long instrumental gap
+            String next = sn.next();
+            boolean showNext = !next.isEmpty() && (cur.isEmpty() ? sn.untilNext() <= 2500 : sn.untilNext() <= 7000);
+            if (!showNext) next = "";
+            if (!cur.isEmpty() || !next.isEmpty()) {
+                int above = y - 29 - cfg.lyricsOffset;
+                int ly = above >= 0 ? above : below + Math.max(0, cfg.lyricsOffset);
+                HudPanel.lyrics(g, font, cur, next, x, ly, w, cfg.alignLyrics);
+            }
         }
     }
 }

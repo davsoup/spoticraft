@@ -165,7 +165,13 @@ final class Gfx {
 
     /** Draws the whole texture (texW x texH pixels) stretched into a w x h area. Returns false if unavailable. */
     static boolean blit(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h, int texW, int texH) {
-        if (id == null) return false;
+        return blitRegion(g, id, x, y, w, h, 0, 0, texW, texH, texW, texH);
+    }
+
+    /** Draws region (u,v,rw,rh) of a tw x th texture stretched into a w x h area. */
+    static boolean blitRegion(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h,
+                              int u, int v, int rw, int rh, int tw, int th) {
+        if (id == null || w <= 0 || h <= 0) return false;
         try {
             if (!blitTried) {
                 blitTried = true;
@@ -194,14 +200,19 @@ final class Gfx {
             }
             if (!blitOk) return false;
             Class<?>[] p = mBlit.getParameterTypes();
-            mBlit.invoke(g, pipeline, id, num(p[2], x), num(p[3], y), num(p[4], 0), num(p[5], 0),
-                    num(p[6], w), num(p[7], h), num(p[8], texW), num(p[9], texH), num(p[10], texW), num(p[11], texH));
+            mBlit.invoke(g, pipeline, id, num(p[2], x), num(p[3], y), num(p[4], u), num(p[5], v),
+                    num(p[6], w), num(p[7], h), num(p[8], rw), num(p[9], rh), num(p[10], tw), num(p[11], th));
             return true;
         } catch (Throwable t) {
             blitOk = false;
             LOG.warn("Blit failed, switching to fallback", t);
             return false;
         }
+    }
+
+    /** False only once the matrix stack is known to be unusable. */
+    static boolean poseUsable() {
+        return !poseTried || poseOk;
     }
 
     static boolean scissorOn(GuiGraphicsExtractor g, int x1, int y1, int x2, int y2) {

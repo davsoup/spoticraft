@@ -34,6 +34,15 @@ public final class SpotifyConfig {
     /** Solid background colour (RGB), or -1 to use the cover's colour. */
     public int bgColor = -1;
     public boolean glow = true;
+    /** Overall size of the block card (0.5 - 3.0). Drag a corner on the control screen. */
+    public float hudScale = 1.0f;
+    /** Diameter of the CD in GUI pixels (40 - 220). Drag a corner on the control screen. */
+    public int cdSize = 110;
+    public int alignLyrics = 0;
+    /** Extra distance between the lyrics and the card (-30 .. 120). */
+    public int lyricsOffset = 0;
+    public int glowSpread = 14;
+    public int glowSoftness = 60;
     public int glowStrength = 60;
     /** RGB colours, or -1 to follow the album cover. */
     public int glowColor = -1;
@@ -61,7 +70,13 @@ public final class SpotifyConfig {
             cfg.titleScale = Math.max(1.0f, Math.min(2.0f, cfg.titleScale));
             cfg.bgMode = Math.max(0, Math.min(2, cfg.bgMode));
             cfg.bgDarkness = Math.max(0, Math.min(80, cfg.bgDarkness));
-            cfg.glowStrength = Math.max(10, Math.min(100, cfg.glowStrength));
+            cfg.glowStrength = Math.max(0, Math.min(100, cfg.glowStrength));
+            cfg.hudScale = Math.max(0.5f, Math.min(3.0f, cfg.hudScale));
+            cfg.cdSize = Math.max(40, Math.min(220, cfg.cdSize));
+            cfg.alignLyrics = Math.max(0, Math.min(2, cfg.alignLyrics));
+            cfg.lyricsOffset = Math.max(-30, Math.min(120, cfg.lyricsOffset));
+            cfg.glowSpread = Math.max(4, Math.min(40, cfg.glowSpread));
+            cfg.glowSoftness = Math.max(0, Math.min(100, cfg.glowSoftness));
             cfg.save(file); // writes defaults on first run, and normalises the file
         } catch (IOException | RuntimeException e) {
             // Broken JSON etc: keep defaults, don't crash the game.

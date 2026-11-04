@@ -12,10 +12,12 @@ public record PlaybackState(
         long durationMs,
         int volumePercent,
         boolean volumeSupported,
+        boolean shuffle,
+        int repeat,
         long fetchedAtMs) {
 
     public static final PlaybackState INACTIVE =
-            new PlaybackState(false, false, "", "", "", "", 0, 0, 0, false, 0);
+            new PlaybackState(false, false, "", "", "", "", 0, 0, 0, false, false, 0, 0);
 
     /** Identifies a track across polls (used to reload art and lyrics when it changes). */
     public String trackKey() {
@@ -31,18 +33,29 @@ public record PlaybackState(
         return durationMs > 0 ? Math.min(p, durationMs) : p;
     }
 
+    /** repeat: 0 = off, 1 = playlist/album, 2 = track. */
+    public PlaybackState withShuffle(boolean on) {
+        return new PlaybackState(active, playing, title, artist, album, artUrl, progressMs, durationMs,
+                volumePercent, volumeSupported, on, repeat, fetchedAtMs);
+    }
+
+    public PlaybackState withRepeat(int mode) {
+        return new PlaybackState(active, playing, title, artist, album, artUrl, progressMs, durationMs,
+                volumePercent, volumeSupported, shuffle, mode, fetchedAtMs);
+    }
+
     public PlaybackState withVolume(int percent) {
         return new PlaybackState(active, playing, title, artist, album, artUrl, progressMs, durationMs,
-                percent, volumeSupported, fetchedAtMs);
+                percent, volumeSupported, shuffle, repeat, fetchedAtMs);
     }
 
     public PlaybackState withProgress(long ms) {
         return new PlaybackState(active, playing, title, artist, album, artUrl, ms, durationMs,
-                volumePercent, volumeSupported, System.currentTimeMillis());
+                volumePercent, volumeSupported, shuffle, repeat, System.currentTimeMillis());
     }
 
     public PlaybackState withPlaying(boolean isPlaying) {
         return new PlaybackState(active, isPlaying, title, artist, album, artUrl, liveProgressMs(), durationMs,
-                volumePercent, volumeSupported, System.currentTimeMillis());
+                volumePercent, volumeSupported, shuffle, repeat, System.currentTimeMillis());
     }
 }
