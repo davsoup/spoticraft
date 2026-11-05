@@ -32,7 +32,8 @@ final class HudPanel {
     private static final int DEN = 3;
     private static Identifier rectGlowId, radGlowId;
     private static long rectKey = Long.MIN_VALUE, radKey = Long.MIN_VALUE;
-    private static int rectT, radN;
+    private static int rectT, radN, rectSpread, rectR, radSpread, radD;
+    private static long rectBakeNs = 0, radBakeNs = 0;
     private static int glowCounter = 0;
 
     private HudPanel() {
@@ -118,7 +119,7 @@ final class HudPanel {
      */
     static void render(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, PlaybackState s, AlbumArt art,
                        int x, int y, boolean interactive, long progOv,
-                       PlaybackState oldS, AlbumArt oldArt, double p) {
+                       PlaybackState oldS, AlbumArt oldArt, double p, int dir) {
         Layout L = layout(cfg);
         int[] R = cardRect(cfg, x, y);
         if (art != null) art.ensureTextures();
@@ -144,11 +145,11 @@ final class HudPanel {
         if (trans && Gfx.scissorOn(g, R[0], R[1], R[0] + R[2], R[1] + R[3])) {
             double e = 1 - Math.pow(1 - p, 3);
             Gfx.push(g);
-            Gfx.translate(g, (float) (-e * R[2]), 0f);
+            Gfx.translate(g, (float) (-dir * e * R[2]), 0f);
             card(g, font, cfg, oldS.withProgress(oldS.durationMs()), oldArt, x, y, false, -1);
             Gfx.pop(g);
             Gfx.push(g);
-            Gfx.translate(g, (float) ((1 - e) * R[2]), 0f);
+            Gfx.translate(g, (float) (dir * (1 - e) * R[2]), 0f);
             card(g, font, cfg, s, art, x, y, interactive, progOv);
             Gfx.pop(g);
             Gfx.scissorOff(g);
@@ -295,14 +296,21 @@ final class HudPanel {
 
     /** Draws the moving colour spill clipped to a rounded rectangle. Returns false if it can't. */
     private static boolean spillRect(GuiGraphicsExtractor g, AlbumArt art, int x, int y, int w, int h, int r, double t) {
+        return spillRect(g, art, x, y, w, h, r, t, 1.0);
+    }
+
+    private static boolean spillRect(GuiGraphicsExtractor g, AlbumArt art, int x, int y, int w, int h, int r, double t,
+                                     double alpha) {
         if (art == null || art.spillId == null || !Gfx.canTransform(g)) return false;
         int cx = x + w / 2;
         int cy = y + h / 2;
-        int size = (int) (Math.hypot(w, h) * 1.2) + 8;
+        // large enough to still cover the whole box at the extreme of the drift, scale and tilt
+        int size = (int) ((Math.hypot(w, h) + 64) / 0.88) + 8;
         double dx = 14 * Math.sin(t * 0.35);
         double dy = 8 * Math.sin(t * 0.27 + 1.0);
         double sc = 1.0 + 0.07 * Math.sin(t * 0.5);
         double rot = 0.07 * Math.sin(t * 0.21);
+        int tint = ((int) Math.round(255 * Math.max(0, Math.min(1, alpha))) << 24) | 0xFFFFFF;
         boolean ok = false;
         for (int[] b : bands(x, y, w, h, r)) {
             if (!Gfx.scissorOn(g, b[0], b[1], b[2], b[3])) return ok;
@@ -310,7 +318,7 @@ final class HudPanel {
             Gfx.translate(g, (float) (cx + dx), (float) (cy + dy));
             if (Gfx.canRotate(g)) Gfx.rotate(g, (float) rot);
             Gfx.scale(g, (float) sc, (float) sc);
-            ok = Gfx.blit(g, art.spillId, -size / 2, -size / 2, size, size, AlbumArt.SPILL, AlbumArt.SPILL);
+            ok = Gfx.blitTint(g, art.spillId, -size / 2, -size / 2, size, size, AlbumArt.SPILL, AlbumArt.SPILL, tint);
             Gfx.pop(g);
             Gfx.scissorOff(g);
             if (!ok) return false;
@@ -439,23 +447,37 @@ final class HudPanel {
 
     // ------------------------------------------------------------ queue peek
 
-    static final int PEEK_W = 150, PEEK_ROW = 20, PEEK_HEAD = 12;
+    static final int PEEK_W = 150;
 
-    static int peekHeight(int n) {
-        return PEEK_HEAD + n * PEEK_ROW + 3;
+    /** Queue-peek geometry before scaling: {w, h, rowH, headH}. */
+    static int[] peekUnscaled(SpotifyConfig cfg, int n) {
+        double ts = cfg.queuePeekText / 100.0;
+        int th = (int) Math.ceil(9 * ts);
+        int rowH = Math.max(20, 2 * th + 2);
+        int head = Math.max(12, th + 3);
+        int w = (int) Math.round(PEEK_W * Math.max(1.0, ts));
+        return new int[]{w, head + n * rowH + 3, rowH, head};
     }
 
-    /** Where the queue peek sits: {x, y, w, h}. */
+    static double peekScale(SpotifyConfig cfg) {
+        if (!Gfx.poseUsable()) return 1.0;
+        return Math.max(0.5, Math.min(3.0, cfg.queuePeekScale));
+    }
+
+    /** Where the queue peek sits on screen: {x, y, w, h}. */
     static int[] peekRect(SpotifyConfig cfg, int n, int cardX, int cardY, int cardW, int cardH,
                           boolean interactive, int screenW) {
-        int h = peekHeight(n);
+        int[] u = peekUnscaled(cfg, n);
+        double sc = peekScale(cfg);
+        int w = (int) Math.round(u[0] * sc), h = (int) Math.round(u[1] * sc);
+        if (cfg.queuePeekCustom) return new int[]{cfg.queuePeekX, cfg.queuePeekY, w, h};
         int side = cfg.queuePeekSide;
-        if (side == 0 && screenW > 0 && cardX + cardW + 6 + PEEK_W > screenW) side = 1;
-        if (side == 1 && cardX - 6 - PEEK_W < 0) side = screenW > 0 && cardX + cardW + 6 + PEEK_W <= screenW ? 0 : 2;
+        if (side == 0 && screenW > 0 && cardX + cardW + 6 + w > screenW) side = 1;
+        if (side == 1 && cardX - 6 - w < 0) side = screenW > 0 && cardX + cardW + 6 + w <= screenW ? 0 : 2;
         return switch (side) {
-            case 0 -> new int[]{cardX + cardW + 6, cardY, PEEK_W, h};
-            case 1 -> new int[]{cardX - 6 - PEEK_W, cardY, PEEK_W, h};
-            default -> new int[]{cardX, cardY + cardH + 4 + (interactive ? 94 : 3), PEEK_W, h};
+            case 0 -> new int[]{cardX + cardW + 6, cardY, w, h};
+            case 1 -> new int[]{cardX - 6 - w, cardY, w, h};
+            default -> new int[]{cardX, cardY + cardH + 4 + (interactive ? 94 : 3), w, h};
         };
     }
 
@@ -463,37 +485,61 @@ final class HudPanel {
                      java.util.List<SpotifyApi.Item> items, CoverCache covers, int[] R) {
         int n = Math.min(items.size(), cfg.queuePeekCount);
         if (n <= 0) return;
+        double t = cfg.motion ? System.nanoTime() / 1e9 : 0.0;
+        double sc = peekScale(cfg);
+        int r = cfg.rounded ? (int) Math.max(3, Math.round(4 * sc)) : 0;
+        // background in whole screen pixels, content scaled on top (same approach as the block card)
+        drawBox(g, art, R[0], R[1], R[2], R[3], r, cfg.queuePeekBg, cfg, 0xC8, cfg.queuePeekDarkness, t);
+        if (Math.abs(sc - 1.0) > 0.01 && Gfx.canTransform(g)) {
+            Gfx.push(g);
+            Gfx.translate(g, R[0], R[1]);
+            Gfx.scale(g, (float) sc, (float) sc);
+            peekContent(g, font, cfg, art, items, covers, n, 0, 0);
+            Gfx.pop(g);
+        } else {
+            peekContent(g, font, cfg, art, items, covers, n, R[0], R[1]);
+        }
+    }
+
+    private static void peekContent(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art,
+                                    java.util.List<SpotifyApi.Item> items, CoverCache covers, int n, int ox, int oy) {
         int accent = art != null ? art.accent() : 0xFFFFFFFF;
         int textRGB = (cfg.queuePeekColor < 0 ? accent : cfg.queuePeekColor) & 0xFFFFFF;
-        double t = cfg.motion ? System.nanoTime() / 1e9 : 0.0;
-        int r = cfg.rounded ? 5 : 0;
-        drawBox(g, art, R[0], R[1], R[2], R[3], r, cfg.queuePeekBg, cfg, 0xC8, cfg.queuePeekDarkness, t);
-        g.text(font, "Up next", R[0] + 6, R[1] + 3, 0xFF000000 | dim(textRGB, 0.65), true);
+        int[] u = peekUnscaled(cfg, n);
+        double ts = cfg.queuePeekText / 100.0;
+        int th = (int) Math.ceil(9 * ts);
+        int align = cfg.queuePeekAlign;
+        String head = "Up next";
+        int hw = (int) Math.ceil(font.width(head) * Math.min(1.0, ts));
+        int hx = align == 1 ? ox + (u[0] - hw) / 2 : align == 2 ? ox + u[0] - 6 - hw : ox + 6;
+        Gfx.text(g, font, head, hx, oy + 3, 0xFF000000 | dim(textRGB, 0.65), true, Math.min(1.0, ts));
         for (int i = 0; i < n; i++) {
             SpotifyApi.Item it = items.get(i);
-            int ry = R[1] + PEEK_HEAD + i * PEEK_ROW;
-            if (i == peekHover) roundR(g, R[0] + 2, ry, R[2] - 4, PEEK_ROW, 0x30FFFFFF, cfg.rounded ? 3 : 0);
-            int tx = R[0] + 6;
+            int ry = oy + u[3] + i * u[2];
+            if (i == peekHover) roundR(g, ox + 2, ry, u[0] - 4, u[2], 0x30FFFFFF, cfg.rounded ? 3 : 0);
+            int tx = ox + 6;
             if (cfg.queuePeekCovers) {
-                int cs = 16;
+                int cs = Math.max(16, u[2] - 4);
                 net.minecraft.resources.Identifier id = covers == null ? null : covers.get(it.art());
-                if (id == null || !Gfx.blit(g, id, tx, ry + 2, cs, cs, CoverCache.SIZE, CoverCache.SIZE)) {
-                    round(g, tx, ry + 2, cs, cs, 0xFF3A3A3A);
+                if (id == null || !Gfx.blit(g, id, tx, ry + (u[2] - cs) / 2, cs, cs, CoverCache.SIZE, CoverCache.SIZE)) {
+                    round(g, tx, ry + (u[2] - cs) / 2, cs, cs, 0xFF3A3A3A);
                 }
                 tx += cs + 5;
             }
-            int colW = R[0] + R[2] - 6 - tx;
-            aligned(g, font, cfg, it.name(), tx, colW, ry + 1, 0xFF000000 | textRGB, true, 1.0, 0);
-            aligned(g, font, cfg, it.sub(), tx, colW, ry + 10, 0xFF000000 | dim(textRGB, 0.65), true, 1.0, 0);
+            int colW = ox + u[0] - 6 - tx;
+            aligned(g, font, cfg, it.name(), tx, colW, ry + 1, 0xFF000000 | textRGB, true, ts, align);
+            aligned(g, font, cfg, it.sub(), tx, colW, ry + 1 + th, 0xFF000000 | dim(textRGB, 0.65), true, ts, align);
         }
     }
 
     /** Index of the queue-peek row at (mx, my), or -1. */
     static int peekRow(SpotifyConfig cfg, int n, int[] R, double mx, double my) {
         n = Math.min(n, cfg.queuePeekCount);
+        int[] u = peekUnscaled(cfg, Math.max(n, 1));
+        double sc = peekScale(cfg);
         for (int i = 0; i < n; i++) {
-            int ry = R[1] + PEEK_HEAD + i * PEEK_ROW;
-            if (mx >= R[0] && mx < R[0] + R[2] && my >= ry && my < ry + PEEK_ROW) return i;
+            double ry = R[1] + (u[3] + i * u[2]) * sc;
+            if (mx >= R[0] && mx < R[0] + R[2] && my >= ry && my < ry + u[2] * sc) return i;
         }
         return -1;
     }
@@ -563,19 +609,28 @@ final class HudPanel {
     // ------------------------------------------------------------ glow (baked soft textures, never rotated)
 
     private static void drawGlow(GuiGraphicsExtractor g, SpotifyConfig cfg, Layout L, int[] R, int x, int y, int rgb) {
-        int spread = cfg.glowSpread;
+        int spread = Math.max(4, (cfg.glowSpread + 1) / 2 * 2);          // quantised so beat links don't rebuild it every frame
+        int soft = Math.round(cfg.glowSoftness / 10f) * 10;
+        boolean tint = Gfx.tintOk(g);
+        int bakeRgb = tint ? 0xFFFFFF : (rgb & 0xF0F0F0);
+        int bakeInt = tint ? 100 : Math.round(cfg.glowStrength / 5f) * 5;
+        int argb = tint ? ((Math.max(0, Math.min(255, Math.round(255f * cfg.glowStrength / 100f))) << 24) | (rgb & 0xFFFFFF)) : -1;
         if (L.style() == 1) {
             int d = L.artS();
-            int size = d + 2 * spread;
-            ensureRadGlow(rgb, spread, cfg.glowStrength, cfg.glowSoftness, d);
-            int cx = x + L.artX() + d / 2;
-            int cy = y + L.artY() + d / 2;
-            Gfx.blit(g, radGlowId, cx - size / 2, cy - size / 2, size, size, radN, radN);
+            ensureRadGlow(bakeRgb, spread, bakeInt, soft, d);
+            if (radGlowId == null) return;
+            int size = radD + 2 * radSpread;
+            int cx = x + L.artX() + L.artS() / 2;
+            int cy = y + L.artY() + L.artS() / 2;
+            if (tint) Gfx.blitRegionTint(g, radGlowId, cx - size / 2, cy - size / 2, size, size, 0, 0, radN, radN, radN, radN, argb);
+            else Gfx.blit(g, radGlowId, cx - size / 2, cy - size / 2, size, size, radN, radN);
             return;
         }
         int r = blockRadius(cfg);
-        ensureRectGlow(rgb, spread, cfg.glowStrength, cfg.glowSoftness, r);
+        ensureRectGlow(bakeRgb, spread, bakeInt, soft, r);
         if (rectGlowId == null) return;
+        spread = rectSpread;
+        r = rectR;
         int X = R[0], Y = R[1], W = R[2], H = R[3];
         if (W < 2 * r + 2 || H < 2 * r + 2) return;
         int cs = spread + r;                 // corner piece size in screen pixels
@@ -585,14 +640,20 @@ final class HudPanel {
         int x0 = X - spread, y0 = Y - spread;
         int x1 = X + W - r, y1 = Y + H - r;
         Identifier id = rectGlowId;
-        Gfx.blitRegion(g, id, x0, y0, cs, cs, 0, 0, cr, cr, t, t);
-        Gfx.blitRegion(g, id, x1, y0, cs, cs, t - cr, 0, cr, cr, t, t);
-        Gfx.blitRegion(g, id, x0, y1, cs, cs, 0, t - cr, cr, cr, t, t);
-        Gfx.blitRegion(g, id, x1, y1, cs, cs, t - cr, t - cr, cr, cr, t, t);
-        Gfx.blitRegion(g, id, x0 + cs, y0, x1 - (x0 + cs), cs, cr, 0, mid, cr, t, t);
-        Gfx.blitRegion(g, id, x0 + cs, y1, x1 - (x0 + cs), cs, cr, t - cr, mid, cr, t, t);
-        Gfx.blitRegion(g, id, x0, y0 + cs, cs, y1 - (y0 + cs), 0, cr, cr, mid, t, t);
-        Gfx.blitRegion(g, id, x1, y0 + cs, cs, y1 - (y0 + cs), t - cr, cr, cr, mid, t, t);
+        glowPiece(g, id, tint, argb, x0, y0, cs, cs, 0, 0, cr, cr, t);
+        glowPiece(g, id, tint, argb, x1, y0, cs, cs, t - cr, 0, cr, cr, t);
+        glowPiece(g, id, tint, argb, x0, y1, cs, cs, 0, t - cr, cr, cr, t);
+        glowPiece(g, id, tint, argb, x1, y1, cs, cs, t - cr, t - cr, cr, cr, t);
+        glowPiece(g, id, tint, argb, x0 + cs, y0, x1 - (x0 + cs), cs, cr, 0, mid, cr, t);
+        glowPiece(g, id, tint, argb, x0 + cs, y1, x1 - (x0 + cs), cs, cr, t - cr, mid, cr, t);
+        glowPiece(g, id, tint, argb, x0, y0 + cs, cs, y1 - (y0 + cs), 0, cr, cr, mid, t);
+        glowPiece(g, id, tint, argb, x1, y0 + cs, cs, y1 - (y0 + cs), t - cr, cr, cr, mid, t);
+    }
+
+    private static void glowPiece(GuiGraphicsExtractor g, Identifier id, boolean tint, int argb, int x, int y, int w, int h,
+                                  int u, int v, int rw, int rh, int t) {
+        if (tint) Gfx.blitRegionTint(g, id, x, y, w, h, u, v, rw, rh, t, t, argb);
+        else Gfx.blitRegion(g, id, x, y, w, h, u, v, rw, rh, t, t);
     }
 
     private static double falloff(double dist, double reach, double softness) {
@@ -606,6 +667,9 @@ final class HudPanel {
     private static void ensureRectGlow(int rgb, int spread, int intensity, int softness, int r) {
         long key = ((long) rgb << 32) ^ (spread * 1000003L + intensity * 1009L + softness * 31L + r * 7919L);
         if (key == rectKey && rectGlowId != null) return;
+        long nowNs = System.nanoTime();
+        if (rectGlowId != null && nowNs - rectBakeNs < 150_000_000L) return;   // keep the old one briefly
+        rectBakeNs = nowNs;
         Gfx.release(rectGlowId);
         rectGlowId = null;
         rectKey = key;
@@ -630,6 +694,8 @@ final class HudPanel {
                 }
             }
             rectT = t;
+            rectSpread = spread;
+            rectR = r;
             rectGlowId = Gfx.registerPng(png(px, t, t), "glow/r" + (++glowCounter));
         } catch (Throwable ignored) {
             rectGlowId = null;
@@ -640,6 +706,9 @@ final class HudPanel {
         int dq = d / 4 * 4;
         long key = ((long) rgb << 32) ^ (spread * 1000003L + intensity * 1009L + softness * 31L + dq * 17L + 1);
         if (key == radKey && radGlowId != null) return;
+        long nowNs = System.nanoTime();
+        if (radGlowId != null && nowNs - radBakeNs < 150_000_000L) return;
+        radBakeNs = nowNs;
         Gfx.release(radGlowId);
         radGlowId = null;
         radKey = key;
@@ -658,6 +727,8 @@ final class HudPanel {
                 }
             }
             radN = n;
+            radSpread = spread;
+            radD = d;
             radGlowId = Gfx.registerPng(png(px, n, n), "glow/c" + (++glowCounter));
         } catch (Throwable ignored) {
             radGlowId = null;
@@ -735,72 +806,172 @@ final class HudPanel {
         return lines;
     }
 
-    static int lyricsHeight(Font font, SpotifyConfig cfg, String cur, String next, int boxW) {
-        int max = lyricsMaxPx(cfg, boxW);
-        int n = wrap(font, cur, max, 3).size() + wrap(font, next, max, 2).size();
-        if (n == 0) return 0;
-        return n * (lyricsPillH(cfg) + 1) - 1;
-    }
-
-    /** Current lyric (bright) and next lyric (dim), wrapped onto as many pill lines as they need. */
     static int mulA(int c, double f) {
         int a = (int) Math.round(((c >>> 24) & 0xFF) * Math.max(0, Math.min(1, f)));
         return (a << 24) | (c & 0xFFFFFF);
     }
 
-    static void lyrics(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art, String cur, String next,
-                       int x, int y, int boxW, int align, double appear, double flash, double nextFade, double fill) {
+    private static double smoother(double t) {
+        t = Math.max(0, Math.min(1, t));
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+
+    private static int lerpC(int a, int b, double f) {
+        f = Math.max(0, Math.min(1, f));
+        int r = (int) (((a >> 16) & 0xFF) * (1 - f) + ((b >> 16) & 0xFF) * f);
+        int g = (int) (((a >> 8) & 0xFF) * (1 - f) + ((b >> 8) & 0xFF) * f);
+        int bl = (int) ((a & 0xFF) * (1 - f) + (b & 0xFF) * f);
+        return (r << 16) | (g << 8) | bl;
+    }
+
+    // ---- lyric animation state (render thread). Everything is driven by the real clock, so a slightly
+    // late Spotify progress update can never make the animation stutter.
+    private static int lyIdx = Integer.MIN_VALUE;
+    private static long lyAnimNs = 0, lyFlashNs = 0, lyLastNs = 0;
+    private static String lyPrev = "";
+    private static double lyFill = 0, lySmoothH = -1;
+    private static final double LY_SLIDE = 0.6;   // seconds for the old line to leave and the new one to arrive
+
+    /**
+     * Draws the lyric block: the line that just ended slides up and fades, the upcoming (dimmed) line moves
+     * into the active slot while brightening and glowing, and the next one fades in below it.
+     *
+     * @param fill karaoke progress of the current line (0..1), or -1 for none
+     */
+    static void lyricsBlock(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art, Lyrics.Snap sn,
+                            String cur, String next, double nextFade, double fill,
+                            int x, int boxW, int align, int cardY, int belowY) {
+        long now = System.nanoTime();
+        double dt = lyLastNs == 0 ? 0.016 : Math.min(0.1, (now - lyLastNs) / 1e9);
+        boolean fresh = lyLastNs != 0 && now - lyLastNs < 1_000_000_000L;
+        lyLastNs = now;
+
+        int idx = sn.idx();
+        if (idx != lyIdx) {
+            boolean natural = fresh && lyIdx != Integer.MIN_VALUE && idx == lyIdx + 1 && sn.sinceCur() < 1500;
+            if (natural) {
+                lyAnimNs = now;
+                lyFlashNs = now;
+                lyPrev = sn.prev();
+                lyFill = 0;
+            } else {
+                lyAnimNs = 0;
+                lyFlashNs = 0;
+                lyPrev = "";
+                lyFill = fill < 0 ? 0 : fill;
+            }
+            lyIdx = idx;
+        }
+        double e = 1.0;
+        if (lyAnimNs != 0) {
+            double t = (now - lyAnimNs) / 1e9 / LY_SLIDE;
+            if (t >= 1) lyAnimNs = 0;
+            else e = smoother(t);
+        }
+        double flash = 0;
+        if (lyFlashNs != 0) {
+            double ft = (now - lyFlashNs) / 1e9;
+            if (ft > 2.6) lyFlashNs = 0;
+            else flash = smoother(ft / 0.3) * (ft < 0.3 ? 1.0 : Math.exp(-(ft - 0.3) / 0.6));
+        }
+        // karaoke progress: never runs backwards, eases toward the estimate
+        double kf = -1;
+        if (fill >= 0) {
+            if (fill < lyFill - 0.35) lyFill = fill;
+            else if (fill > lyFill) lyFill += (fill - lyFill) * Math.min(1.0, dt * 12.0);
+            kf = lyFill;
+        }
+
+        int ph = lyricsPillH(cfg);
+        int step = ph + 1;
+        int max = lyricsMaxPx(cfg, boxW);
+        List<String> curL = wrap(font, cur, max, 3);
+        List<String> nextL = wrap(font, next, max, 2);
+        List<String> prevL = e < 1.0 ? wrap(font, lyPrev, max, 3) : List.of();
+        int curH = curL.size() * step;
+        int nextH = nextL.size() * step;
+        int prevH = prevL.size() * step;
+
+        // placement uses a smoothed height so the block never jumps when a line wraps differently
+        double target = Math.max(0, curH + nextH - 1);
+        lySmoothH = lySmoothH < 0 ? target : lySmoothH + (target - lySmoothH) * Math.min(1.0, dt * 10.0);
+        int lh = (int) Math.round(lySmoothH);
+        int above = cardY - lh - 2 - cfg.lyricsOffset;
+        int y0 = above >= 0 ? above : belowY + Math.max(0, cfg.lyricsOffset);
+
+        if (!prevL.isEmpty()) {
+            double fade = Math.max(0, 1.0 - e * 1.7);
+            pills(g, font, cfg, art, prevL, x, y0 - (int) Math.round(e * step), boxW, align, fade, 1.0 - 0.6 * e, 0, -1);
+        }
+        if (!curL.isEmpty()) {
+            int yc = y0 + (int) Math.round((1.0 - e) * prevH);
+            pills(g, font, cfg, art, curL, x, yc, boxW, align, 1.0, e, flash, kf);
+        }
+        if (!nextL.isEmpty()) {
+            double a = nextFade * (e < 1.0 ? Math.max(0, (e - 0.4) / 0.6) : 1.0);
+            if (a > 0.01) pills(g, font, cfg, art, nextL, x, y0 + curH, boxW, align, a, 0.0, 0, -1);
+        }
+    }
+
+    /**
+     * One group of wrapped lyric lines drawn as pills.
+     *
+     * @param al    overall opacity (0..1)
+     * @param b     0 = dimmed (upcoming), 1 = fully bright (current)
+     * @param flash 0..1 accent glow around the pill and text
+     * @param fill  karaoke progress across the lines (0..1), or -1 for none
+     */
+    private static void pills(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art, List<String> lines,
+                              int x, int y, int boxW, int align, double al, double b, double flash, double fill) {
+        if (al < 0.02) return;
         if (!cfg.lyricsFlash) flash = 0;
         if (!cfg.lyricsKaraoke) fill = -1;
-        int fillRGB = (cfg.lyricsFillColor < 0 ? (art != null ? art.accent() : 0xFFFFFFFF) : cfg.lyricsFillColor) & 0xFFFFFF;
         int accentRGB = (art != null ? art.accent() : 0xFFFFFFFF) & 0xFFFFFF;
+        int fillRGB = (cfg.lyricsFillColor < 0 ? accentRGB : cfg.lyricsFillColor) & 0xFFFFFF;
         double sc = cfg.lyricsScale / 100.0;
         int ph = lyricsPillH(cfg);
         int padX = (int) Math.round(5 * sc);
-        int max = lyricsMaxPx(cfg, boxW);
         double t = cfg.motion ? System.nanoTime() / 1e9 : 0.0;
-        List<String> curLines = wrap(font, cur, max, 3);
-        List<String> nextLines = wrap(font, next, max, 2);
-        int total = curLines.size() + nextLines.size();
-        double curTotalW = 0;
-        for (String cl : curLines) curTotalW += font.width(cl);
-        double filledPx = fill < 0 ? -1 : fill * curTotalW;
+        double totalW = 0;
+        for (String l : lines) totalW += font.width(l);
+        double filledPx = fill < 0 ? -1 : fill * totalW;
         double offW = 0;
-        for (int n = 0; n < total; n++) {
-            boolean bright = n < curLines.size();
-            String f = bright ? curLines.get(n) : nextLines.get(n - curLines.size());
+        double textA = al * (0.55 + 0.45 * b);          // dimmed lines are clearly softer than the active one
+        double bgA = al * (0.78 + 0.22 * b);
+        int baseRGB = lerpC(0xA8A8A8, 0xFFFFFF, b);
+        int r = cfg.rounded ? 3 : 0;
+        for (int n = 0; n < lines.size(); n++) {
+            String f = lines.get(n);
             int tw = (int) Math.ceil(font.width(f) * sc);
             int w = tw + 2 * padX;
             int px = align == 1 ? x + (boxW - w) / 2 : align == 2 ? x + boxW - w : x;
             int py = y + n * (ph + 1);
-            double al = bright ? appear : nextFade;
-            if (bright) py += (int) Math.round((1 - appear) * (ph + 1));
-            if (al < 0.03) continue;
-            int r = cfg.rounded ? 3 : 0;
-            if (bright && flash > 0.02) {
-                for (int k = 3; k >= 1; k--) {
-                    int a = (int) (flash * 46 / k);
-                    roundR(g, px - k * 2, py - k * 2, w + k * 4, ph + k * 4, (a << 24) | accentRGB, r + k * 2);
+            if (flash > 0.02) {
+                for (int k = 5; k >= 1; k--) {
+                    int a = (int) (flash * 15);
+                    if (a > 0) roundR(g, px - k * 2, py - k * 2, w + k * 4, ph + k * 4, (a << 24) | accentRGB, r + k * 2);
                 }
             }
             switch (cfg.lyricsBgMode) {
-                case 0 -> roundR(g, px, py, w, ph, mulA(bright ? 0x99000000 : 0x77000000, al), r);
+                case 0 -> roundR(g, px, py, w, ph, mulA(0x99000000, bgA), r);
                 case 1 -> {
-                    int a = bright ? 0xD0 : 0xA0;
-                    int col = cfg.lyricsBgColor < 0 ? (art != null ? art.darkAverage(a) : (a << 24) | 0x202020)
-                            : (a << 24) | (cfg.lyricsBgColor & 0xFFFFFF);
-                    roundR(g, px, py, w, ph, mulA(col, al), r);
+                    int col = cfg.lyricsBgColor < 0 ? (art != null ? art.darkAverage(0xD0) : 0xD0202020)
+                            : (0xD0 << 24) | (cfg.lyricsBgColor & 0xFFFFFF);
+                    roundR(g, px, py, w, ph, mulA(col, bgA), r);
                 }
                 case 2 -> {
-                    if (spillRect(g, art, px, py, w, ph, r, t)) roundR(g, px, py, w, ph, bright ? 0x38000000 : 0x60000000, r);
-                    else roundR(g, px, py, w, ph, 0x99000000, r);
+                    if (spillRect(g, art, px, py, w, ph, r, t, bgA)) {
+                        roundR(g, px, py, w, ph, mulA((int) (0x38 + 0x28 * (1 - b)) << 24, bgA), r);
+                    } else {
+                        roundR(g, px, py, w, ph, mulA(0x99000000, bgA), r);
+                    }
                 }
                 default -> {
                 }
             }
             int tx = px + padX, ty = py + (int) Math.round(2 * sc);
-            if (bright && flash > 0.04) {
-                int ha = (int) (flash * 110);
+            if (flash > 0.04) {
+                int ha = (int) (flash * 120 * al);
                 if (ha >= 6) {
                     int hc = (ha << 24) | accentRGB;
                     Gfx.text(g, font, f, tx - 1, ty, hc, false, sc);
@@ -809,12 +980,13 @@ final class HudPanel {
                     Gfx.text(g, font, f, tx, ty + 1, hc, false, sc);
                 }
             }
-            int ta = (int) Math.round(255 * al);
-            if (ta >= 6 && bright && filledPx >= 0) {
+            int ta = (int) Math.round(255 * textA);
+            if (ta < 6) continue;
+            if (filledPx >= 0) {
                 double lw = font.width(f);
                 double part = Math.max(0, Math.min(lw, filledPx - offW));
                 offW += lw;
-                Gfx.text(g, font, f, tx, ty, (ta << 24) | 0xA8A8A8, true, sc);       // not sung yet
+                Gfx.text(g, font, f, tx, ty, (ta << 24) | lerpC(0xA8A8A8, baseRGB, 0.5), true, sc);   // not sung yet
                 if (part > 0) {
                     int cutX = tx + (int) Math.ceil(part * sc);
                     if (part >= lw - 0.5) {
@@ -824,8 +996,8 @@ final class HudPanel {
                         Gfx.scissorOff(g);
                     }
                 }
-            } else if (ta >= 6) {
-                Gfx.text(g, font, f, tx, ty, (ta << 24) | (bright ? 0xFFFFFF : 0xB8B8B8), bright && al > 0.9, sc);
+            } else {
+                Gfx.text(g, font, f, tx, ty, (ta << 24) | baseRGB, b > 0.9, sc);
             }
         }
     }

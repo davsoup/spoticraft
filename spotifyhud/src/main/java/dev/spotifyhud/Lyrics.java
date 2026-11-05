@@ -56,7 +56,7 @@ final class Lyrics {
         });
     }
 
-    record Snap(String cur, String next, long untilNext, long sinceCur) {
+    record Snap(String cur, String next, long untilNext, long sinceCur, String prev, int idx) {
     }
 
     /** Current and next line for a playback position, plus timing so the HUD can decide what to show. */
@@ -75,7 +75,7 @@ final class Lyrics {
             next = l.get(idx + 1).text();
             until = l.get(idx + 1).ms() - ms;
         }
-        return new Snap(cur, next, until, since);
+        return new Snap(cur, next, until, since, idx >= 1 ? l.get(idx - 1).text() : "", idx);
     }
 
     /** Returns {current, next} lines for the given playback position (either may be empty). */

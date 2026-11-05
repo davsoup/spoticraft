@@ -15,7 +15,7 @@ public final class SpotifyScreen extends BaseScreen {
     static volatile long lastRender = 0;
 
     private static final String[] STYLE_NAMES = {"Block", "CD", "Vinyl"};
-    private static final int NONE = 0, MOVE = 1, SEEK = 2, VOL = 3, RESIZE = 4;
+    private static final int NONE = 0, MOVE = 1, SEEK = 2, VOL = 3, RESIZE = 4, PEEK_MOVE = 5, PEEK_RESIZE = 6;
     private static final int BTN_W = 26, BTN_H = 14, BTN_GAP = 6, HANDLE = 6, PB = 5, PB_GAP = 4;
 
     private int mode = NONE;
@@ -24,6 +24,9 @@ public final class SpotifyScreen extends BaseScreen {
     private int volPct = -1;
     private long lastVolSend = 0;
     private int corner, anchorX, anchorY;
+    private int peekRowDown = -1;
+    private double peekDownX, peekDownY;
+    private boolean peekMoved;
 
     public SpotifyScreen() {
         super(Component.literal("Spotify"));
@@ -75,6 +78,10 @@ public final class SpotifyScreen extends BaseScreen {
         int y = cfg.hudY;
         int w = Math.max(c.panelW, 150);
 
+        int[] pk = c.peekRectNow(true);
+        if (pk != null) {
+            for (int i = 0; i < 4; i++) HudPanel.handle(g, cornerX(pk, i), cornerY(pk, i));
+        }
         if (c.panelFull) {
             int[] r = HudPanel.resizeRect(cfg, x, y);
             for (int i = 0; i < 4; i++) HudPanel.handle(g, cornerX(r, i), cornerY(r, i));
@@ -105,7 +112,9 @@ public final class SpotifyScreen extends BaseScreen {
         HudPanel.button(g, font, "Style: " + STYLE_NAMES[cfg.style], x, r3, hw, BTN_H, inRect(mouseX, mouseY, x, r3, hw, BTN_H));
         HudPanel.button(g, font, "Customize", x + hw + BTN_GAP, r3, hw, BTN_H,
                 inRect(mouseX, mouseY, x + hw + BTN_GAP, r3, hw, BTN_H));
-        HudPanel.button(g, font, "Queue & Playlists", x, r4, w, BTN_H, inRect(mouseX, mouseY, x, r4, w, BTN_H));
+        HudPanel.button(g, font, "Queue & Playlists", x, r4, hw, BTN_H, inRect(mouseX, mouseY, x, r4, hw, BTN_H));
+        HudPanel.toggleButton(g, font, "Queue HUD: " + (cfg.queuePeek && cfg.queuePeekHud ? "On" : "Off"), x + hw + BTN_GAP, r4, hw,
+                BTN_H, inRect(mouseX, mouseY, x + hw + BTN_GAP, r4, hw, BTN_H), cfg.queuePeek && cfg.queuePeekHud);
 
         String hint = "Drag the card to move  |  drag a corner to resize  |  click or drag the bars  |  Esc to close";
         g.text(font, hint, (width - font.width(hint)) / 2, height - 14, 0xFFCCCCCC, true);
@@ -125,9 +134,23 @@ public final class SpotifyScreen extends BaseScreen {
 
         int[] pr = c.peekRectNow(true);
         if (pr != null) {
-            int row = HudPanel.peekRow(cfg, c.queueItems.size(), pr, mx, my);
-            if (row >= 0) {
-                c.skipToQueue(row);
+            for (int i = 0; i < 4; i++) {
+                if (Math.abs(mx - cornerX(pr, i)) <= HANDLE && Math.abs(my - cornerY(pr, i)) <= HANDLE) {
+                    mode = PEEK_RESIZE;
+                    corner = i;
+                    anchorX = i % 2 == 1 ? pr[0] : pr[0] + pr[2];
+                    anchorY = i >= 2 ? pr[1] : pr[1] + pr[3];
+                    return true;
+                }
+            }
+            if (inRect(mx, my, pr[0], pr[1], pr[2], pr[3])) {
+                mode = PEEK_MOVE;               // a click skips to that song, a drag moves the box
+                offX = (int) mx - pr[0];
+                offY = (int) my - pr[1];
+                peekDownX = mx;
+                peekDownY = my;
+                peekMoved = false;
+                peekRowDown = HudPanel.peekRow(cfg, c.queueItems.size(), pr, mx, my);
                 return true;
             }
         }
@@ -194,9 +217,16 @@ public final class SpotifyScreen extends BaseScreen {
             Minecraft.getInstance().gui.setScreen(new SpotifyCustomizeScreen());
             return true;
         }
-        if (inRect(mx, my, x, r4, w, BTN_H)) {
+        if (inRect(mx, my, x, r4, hw, BTN_H)) {
             c.saveConfig();
             c.openBrowser(0);
+            return true;
+        }
+        if (inRect(mx, my, x + hw + BTN_GAP, r4, hw, BTN_H)) {
+            boolean on = !(cfg.queuePeek && cfg.queuePeekHud);
+            cfg.queuePeek = on;
+            cfg.queuePeekHud = on;
+            c.saveConfig();
             return true;
         }
         int ph = c.panelBottom - y;
@@ -229,6 +259,25 @@ public final class SpotifyScreen extends BaseScreen {
             sendVolume(c, false);
         } else if (mode == RESIZE) {
             resize(cfg, mx, my);
+        } else if (mode == PEEK_MOVE) {
+            if (!peekMoved && Math.hypot(mx - peekDownX, my - peekDownY) > 3) peekMoved = true;
+            if (peekMoved) {
+                int[] pr = c.peekRectNow(true);
+                int pw = pr != null ? pr[2] : 150, ph = pr != null ? pr[3] : 60;
+                cfg.queuePeekCustom = true;
+                cfg.queuePeekX = clamp((int) mx - offX, 0, Math.max(0, width - pw));
+                cfg.queuePeekY = clamp((int) my - offY, 0, Math.max(0, height - ph));
+            }
+        } else if (mode == PEEK_RESIZE) {
+            int n = Math.min(c.queueItems.size(), cfg.queuePeekCount);
+            int[] u = HudPanel.peekUnscaled(cfg, Math.max(1, n));
+            double sc = Math.max(Math.abs(mx - anchorX) / u[0], Math.abs(my - anchorY) / u[1]);
+            sc = Math.max(0.5, Math.min(3.0, sc));
+            cfg.queuePeekScale = (float) sc;
+            int nw = (int) Math.round(u[0] * sc), nh = (int) Math.round(u[1] * sc);
+            cfg.queuePeekCustom = true;
+            cfg.queuePeekX = corner % 2 == 1 ? anchorX : anchorX - nw;
+            cfg.queuePeekY = corner >= 2 ? anchorY : anchorY - nh;
         }
         return true;
     }
@@ -258,7 +307,12 @@ public final class SpotifyScreen extends BaseScreen {
     public boolean mouseReleased(MouseButtonEvent event) {
         SpotifyHudClient c = SpotifyHudClient.instance;
         if (c != null && mode != NONE) {
-            if (mode == MOVE || mode == RESIZE) {
+            if (mode == PEEK_MOVE) {
+                if (!peekMoved && peekRowDown >= 0) c.skipToQueue(peekRowDown);
+                else c.saveConfig();
+            } else if (mode == PEEK_RESIZE) {
+                c.saveConfig();
+            } else if (mode == MOVE || mode == RESIZE) {
                 c.saveConfig();
             } else if (mode == SEEK) {
                 c.seekTo((long) (seekFrac * c.state.durationMs()));

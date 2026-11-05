@@ -189,16 +189,10 @@ final class Gfx {
         return (int) Math.round(v);
     }
 
-    /** Draws the whole texture (texW x texH pixels) stretched into a w x h area. Returns false if unavailable. */
-    static boolean blit(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h, int texW, int texH) {
-        return blitRegion(g, id, x, y, w, h, 0, 0, texW, texH, texW, texH);
-    }
+    private static Method mBlitTint;
 
-    /** Draws region (u,v,rw,rh) of a tw x th texture stretched into a w x h area. */
-    static boolean blitRegion(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h,
-                              int u, int v, int rw, int rh, int tw, int th) {
-        if (id == null || w <= 0 || h <= 0) return false;
-        try {
+    private static void initBlit(GuiGraphicsExtractor g) {
+        {
             if (!blitTried) {
                 blitTried = true;
                 try {
@@ -211,12 +205,11 @@ final class Gfx {
                         pipeline = f.get(null);
                     }
                     for (Method m : g.getClass().getMethods()) {
-                        if (!m.getName().equals("blit") || m.getParameterCount() != 12) continue;
+                        if (!m.getName().equals("blit")) continue;
                         Class<?>[] p = m.getParameterTypes();
-                        if (p[0].isInstance(pipeline) && p[1].isAssignableFrom(Identifier.class)) {
-                            mBlit = m;
-                            break;
-                        }
+                        if (p.length < 12 || !p[0].isInstance(pipeline) || !p[1].isAssignableFrom(Identifier.class)) continue;
+                        if (p.length == 12 && mBlit == null) mBlit = m;
+                        if (p.length == 13 && p[12] == int.class && mBlitTint == null) mBlitTint = m;
                     }
                     blitOk = mBlit != null && pipeline != null;
                 } catch (Throwable t) {
@@ -224,6 +217,62 @@ final class Gfx {
                 }
                 if (!blitOk) LOG.warn("Textured blit not available; using pixel fallback for album art");
             }
+        }
+    }
+
+    /** True if textured blits can be tinted (colour and fade for free, no texture rebuilds). */
+    static boolean tintOk(GuiGraphicsExtractor g) {
+        try {
+            initBlit(g);
+            return blitOk && mBlitTint != null;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Region blit multiplied by an ARGB tint. */
+    static boolean blitRegionTint(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h,
+                                  int u, int v, int rw, int rh, int tw, int th, int argb) {
+        if (id == null || w <= 0 || h <= 0 || !tintOk(g)) return false;
+        try {
+            Class<?>[] p = mBlitTint.getParameterTypes();
+            mBlitTint.invoke(g, pipeline, id, num(p[2], x), num(p[3], y), num(p[4], u), num(p[5], v),
+                    num(p[6], w), num(p[7], h), num(p[8], rw), num(p[9], rh), num(p[10], tw), num(p[11], th), argb);
+            return true;
+        } catch (Throwable t) {
+            mBlitTint = null;
+            return false;
+        }
+    }
+
+    /** Like {@link #blit} but multiplied by an ARGB tint (alpha fades it). False if tinting isn't available. */
+    static boolean blitTint(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h, int texW, int texH, int argb) {
+        if (id == null || w <= 0 || h <= 0) return false;
+        if ((argb >>> 24) >= 0xFE) return blit(g, id, x, y, w, h, texW, texH);
+        try {
+            initBlit(g);
+            if (!blitOk || mBlitTint == null) return false;
+            Class<?>[] p = mBlitTint.getParameterTypes();
+            mBlitTint.invoke(g, pipeline, id, num(p[2], x), num(p[3], y), num(p[4], 0), num(p[5], 0),
+                    num(p[6], w), num(p[7], h), num(p[8], texW), num(p[9], texH), num(p[10], texW), num(p[11], texH), argb);
+            return true;
+        } catch (Throwable t) {
+            mBlitTint = null;
+            return false;
+        }
+    }
+
+    /** Draws the whole texture (texW x texH pixels) stretched into a w x h area. Returns false if unavailable. */
+    static boolean blit(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h, int texW, int texH) {
+        return blitRegion(g, id, x, y, w, h, 0, 0, texW, texH, texW, texH);
+    }
+
+    /** Draws region (u,v,rw,rh) of a tw x th texture stretched into a w x h area. */
+    static boolean blitRegion(GuiGraphicsExtractor g, Identifier id, int x, int y, int w, int h,
+                              int u, int v, int rw, int rh, int tw, int th) {
+        if (id == null || w <= 0 || h <= 0) return false;
+        try {
+            initBlit(g);
             if (!blitOk) return false;
             Class<?>[] p = mBlit.getParameterTypes();
             mBlit.invoke(g, pipeline, id, num(p[2], x), num(p[3], y), num(p[4], u), num(p[5], v),

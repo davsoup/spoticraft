@@ -75,6 +75,11 @@ public final class SpotifyHudClient implements ClientModInitializer {
     private volatile PlaybackState prevState;
     private volatile AlbumArt prevArt;
     private volatile long transStart = 0;
+    /** +1 = forward (old card leaves to the left), -1 = backward (old card leaves to the right). */
+    private volatile int transDir = 1;
+    private volatile int skipDir = 0;
+    private volatile long skipDirAt = 0;
+    private String beforeLastKey = "";
     private static final long TRANSITION_NS = 450_000_000L;
 
     private final java.util.concurrent.ConcurrentLinkedQueue<AlbumArt> toRelease = new java.util.concurrent.ConcurrentLinkedQueue<>();
@@ -107,6 +112,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         openKey = key("open_controls", 19 /* P */, cat);
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
+        Runtime.getRuntime().addShutdownHook(new Thread(BeatAudio::shutdown, "spotifyhud-beat-exit"));
 
         HudElementRegistry.attachElementBefore(
                 VanillaHudElements.CHAT,
@@ -192,6 +198,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
     // ------------------------------------------------------------------ tick / polling
 
     private void tick(Minecraft mc) {
+        BeatAudio.update(config, configFile.getParent());
         Screen ps = pendingScreen;
         if (ps != null && mc.player != null) {
             pendingScreen = null;
@@ -282,6 +289,8 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     void skip(boolean forward) {
         if (!requireActive()) return;
+        skipDir = forward ? 1 : -1;
+        skipDirAt = System.currentTimeMillis();
         SpotifyApi a = api;
         run(() -> {
             if (forward) a.next();
@@ -372,6 +381,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
         String key = s.active() ? s.trackKey() : "";
         if (!key.equals(currentTrack)) {
             boolean hadTrack = !currentTrack.isEmpty();
+            String prevKey = currentTrack;
             currentTrack = key;
             AlbumArt a = s.active() && !s.artUrl().isEmpty() ? new AlbumArt(s.artUrl()) : null;
             if (a != null) a.load(http, bg);
@@ -382,12 +392,16 @@ public final class SpotifyHudClient implements ClientModInitializer {
             if (hadTrack && s.active() && was != null) {
                 prevState = was;
                 prevArt = old;
+                boolean recentSkip = System.currentTimeMillis() - skipDirAt < 6000;
+                // going back: the user pressed previous, or this is the track that played just before
+                transDir = key.equals(beforeLastKey) || (recentSkip && skipDir < 0) ? -1 : 1;
                 transStart = System.nanoTime();
             } else {
                 prevState = null;
                 prevArt = null;
                 if (old != null) toRelease.add(old);
             }
+            beforeLastKey = prevKey;
             art = a;
             lyrics = new Lyrics();
             nextQueueAt = 0; // refresh the queue peek for the new track
@@ -418,7 +432,10 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     /** Where the queue peek is drawn right now, or null if it isn't shown. */
     int[] peekRectNow(boolean interactive) {
-        SpotifyConfig cfg = config;
+        return peekRectFor(config, interactive);
+    }
+
+    private int[] peekRectFor(SpotifyConfig cfg, boolean interactive) {
         if (!panelFull || !cfg.queuePeek || !(interactive || cfg.queuePeekHud)) return null;
         int n = Math.min(queueItems.size(), cfg.queuePeekCount);
         if (n <= 0) return null;
@@ -607,7 +624,8 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
     /** Draws the card (or a setup message), lyrics and status line. Used by the HUD and the control screen. */
     void drawHud(GuiGraphicsExtractor g, boolean interactive, long progOv) {
-        SpotifyConfig cfg = config;
+        // beat links are applied to a copy; the control screen draws the real settings so dragging stays exact
+        SpotifyConfig cfg = interactive ? config : Mod.apply(config, art);
         Font font = Minecraft.getInstance().font;
         AlbumArt dead;
         while ((dead = toRelease.poll()) != null) dead.release();
@@ -647,7 +665,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
                     oldArt = null;
                 }
             }
-            HudPanel.render(g, font, cfg, s, art, x, y, interactive, progOv, oldS, oldArt, p);
+            HudPanel.render(g, font, cfg, s, art, x, y, interactive, progOv, oldS, oldArt, p, transDir);
             lastFull = s;
             int[] R = HudPanel.cardRect(cfg, x, y);
             bottom = y + R[3];
@@ -660,7 +678,7 @@ public final class SpotifyHudClient implements ClientModInitializer {
 
         if (full) {
             refreshQueueIfNeeded(interactive);
-            int[] pr = peekRectNow(interactive);
+            int[] pr = peekRectFor(cfg, interactive);
             if (pr != null) {
                 java.util.List<SpotifyApi.Item> q = queueItems;
                 java.util.Set<String> keep = new java.util.HashSet<>();
@@ -683,26 +701,17 @@ public final class SpotifyHudClient implements ClientModInitializer {
             String cur = sn.cur();
             if (!cur.isEmpty() && sn.sinceCur() > 10000 && sn.untilNext() > 3000) cur = ""; // long instrumental gap
             String next = sn.next();
-            boolean showNext = !next.isEmpty() && (cur.isEmpty() ? sn.untilNext() <= 2500 : sn.untilNext() <= 7000);
-            if (!showNext) next = "";
-            if (!cur.isEmpty() || !next.isEmpty()) {
-                int lh = HudPanel.lyricsHeight(font, cfg, cur, next, w);
-                int above = y - lh - 2 - cfg.lyricsOffset;
-                int ly = above >= 0 ? above : below + Math.max(0, cfg.lyricsOffset);
-                double sinceS = sn.sinceCur();
-                double appear = cur.isEmpty() ? 1 : Math.min(1, sinceS / 420.0);
-                appear = 1 - Math.pow(1 - appear, 3);
-                double flash = cur.isEmpty() || sinceS > 1200 ? 0
-                        : Math.min(1, sinceS / 70.0) * Math.exp(-sinceS / 300.0);
-                double thr = cur.isEmpty() ? 2500 : 7000;
-                double nextFade = Math.max(0, Math.min(1, (thr - sn.untilNext()) / 450.0));
-                double fill = -1;
-                if (!cur.isEmpty()) {
-                    long lineDur = sn.sinceCur() + (sn.untilNext() == Long.MAX_VALUE ? 5000 : sn.untilNext());
-                    double est = Math.min(Math.max(1200.0, cur.length() * 70.0), lineDur * 0.92);
-                    fill = Math.max(0, Math.min(1, sinceS / Math.max(300.0, est)));
-                }
-                HudPanel.lyrics(g, font, cfg, art, cur, next, x, ly, w, cfg.alignLyrics, appear, flash, nextFade, fill);
+            double thr = cur.isEmpty() ? 2500 : 7000;
+            double nextFade = next.isEmpty() || sn.untilNext() == Long.MAX_VALUE ? 0
+                    : Math.max(0, Math.min(1, (thr - sn.untilNext()) / 700.0));
+            double fill = -1;
+            if (!cur.isEmpty()) {
+                long lineDur = sn.sinceCur() + (sn.untilNext() == Long.MAX_VALUE ? 5000 : sn.untilNext());
+                double est = Math.min(Math.max(1200.0, cur.length() * 70.0), lineDur * 0.92);
+                fill = Math.max(0, Math.min(1, sn.sinceCur() / Math.max(300.0, est)));
+            }
+            if (!cur.isEmpty() || nextFade > 0) {
+                HudPanel.lyricsBlock(g, font, cfg, art, sn, cur, next, nextFade, fill, x, w, cfg.alignLyrics, y, below);
             }
         }
     }

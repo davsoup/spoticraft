@@ -8,7 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** config/spotifyhud.json. Edit it, then run /spotify reload (or restart). */
-public final class SpotifyConfig {
+public final class SpotifyConfig implements Cloneable {
     /** Client ID of your app from https://developer.spotify.com/dashboard */
     public String clientId = "";
     /** Must match the redirect URI registered on your Spotify app: http://127.0.0.1:<port>/callback */
@@ -102,6 +102,16 @@ public final class SpotifyConfig {
     public int queuePeekBg = 0;
     public int queuePeekDarkness = 35;
     public int queuePeekColor = 0xFFFFFF;
+    /** Text size inside the box (70 - 200 %). */
+    public int queuePeekText = 100;
+    /** Text alignment: 0 left, 1 center, 2 right. */
+    public int queuePeekAlign = 0;
+    /** Overall size of the box (0.5 - 3.0). Drag a corner on the control screen. */
+    public float queuePeekScale = 1.0f;
+    /** After dragging it, the box stays at queuePeekX / queuePeekY instead of snapping beside the card. */
+    public boolean queuePeekCustom = false;
+    public int queuePeekX = 0;
+    public int queuePeekY = 0;
 
     // ---- ambient screen-edge glow
     public boolean ambient = true;
@@ -112,6 +122,22 @@ public final class SpotifyConfig {
     /** 0 = all edges, 1 = left/right, 2 = top/bottom. */
     public int ambientEdges = 0;
     public int ambientSpeed = 4;
+
+    // ---- beat link (audio-reactive modulation)
+    public boolean beatEnabled = false;
+    /** 0 = only the Spotify desktop app, 1 = all PC audio. */
+    public int beatSource = 0;
+    public int beatSensitivity = 50;
+    public java.util.List<Link> links = new java.util.ArrayList<>();
+
+    /** Shallow copy; the HUD draws from a modulated copy so saved settings are never touched. */
+    public SpotifyConfig copy() {
+        try {
+            return (SpotifyConfig) super.clone();
+        } catch (CloneNotSupportedException e) {
+            throw new AssertionError(e);
+        }
+    }
 
     // ---- helpers: settings that depend on the current disc style (1 = CD, 2 = vinyl)
     public int dSize() {
@@ -149,6 +175,10 @@ public final class SpotifyConfig {
                 if (read != null) cfg = read;
             }
             if (cfg.clientId == null) cfg.clientId = "";
+            if (cfg.links == null) cfg.links = new java.util.ArrayList<>();
+            cfg.links.removeIf(l -> l == null || l.param == null);
+            cfg.beatSource = cl(cfg.beatSource, 0, 1);
+            cfg.beatSensitivity = cl(cfg.beatSensitivity, 0, 100);
             cfg.volumeStep = Math.max(1, cfg.volumeStep);
             cfg.seekStepSeconds = Math.max(1, cfg.seekStepSeconds);
             cfg.pollIntervalMs = Math.max(1000, cfg.pollIntervalMs); // be nice to Spotify's rate limits
@@ -179,6 +209,9 @@ public final class SpotifyConfig {
             cfg.queuePeekSide = cl(cfg.queuePeekSide, 0, 2);
             cfg.queuePeekBg = cl(cfg.queuePeekBg, 0, 2);
             cfg.queuePeekDarkness = cl(cfg.queuePeekDarkness, 0, 80);
+            cfg.queuePeekText = cl(cfg.queuePeekText, 70, 200);
+            cfg.queuePeekAlign = cl(cfg.queuePeekAlign, 0, 2);
+            cfg.queuePeekScale = Math.max(0.5f, Math.min(3.0f, cfg.queuePeekScale));
             cfg.ambientSize = cl(cfg.ambientSize, 20, 200);
             cfg.ambientIntensity = cl(cfg.ambientIntensity, 0, 100);
             cfg.ambientEdges = cl(cfg.ambientEdges, 0, 2);
