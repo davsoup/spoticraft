@@ -1,12 +1,4 @@
 {
   "key.category.spotifyhud.keys": "Spotify HUD",
-  "key.spotifyhud.login": "Log in to Spotify",
-  "key.spotifyhud.play_pause": "Play / Pause",
-  "key.spotifyhud.next": "Next Track",
-  "key.spotifyhud.previous": "Previous Track",
-  "key.spotifyhud.volume_up": "Volume Up",
-  "key.spotifyhud.volume_down": "Volume Down",
-  "key.spotifyhud.seek_forward": "Seek Forward",
-  "key.spotifyhud.seek_back": "Seek Back",
-  "key.spotifyhud.toggle_hud": "Show / Hide HUD"
+  "key.spotifyhud.open_controls": "Open Spotify Controls"
 }

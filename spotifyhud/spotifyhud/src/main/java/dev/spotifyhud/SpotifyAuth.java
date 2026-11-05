@@ -44,7 +44,8 @@ public final class SpotifyAuth {
     private static final Logger LOG = LoggerFactory.getLogger("spotifyhud");
     private static final String AUTH_URL = "https://accounts.spotify.com/authorize";
     private static final String TOKEN_URL = "https://accounts.spotify.com/api/token";
-    private static final String SCOPES = "user-read-playback-state user-modify-playback-state";
+    private static final String SCOPES = "user-read-playback-state user-modify-playback-state"
+            + " playlist-read-private playlist-read-collaborative user-library-read";
 
     private final SpotifyConfig config;
     private final Path tokenFile;
