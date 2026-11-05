@@ -122,6 +122,11 @@ public static class SpotifyHudBeat
         t.Join();
     }
 
+    static void AddWhy(ref string why, string code)
+    {
+        if (why.Length < 90) why += (why.Length > 0 ? " " : "") + code;
+    }
+
     static void Say(string s)
     {
         outw.WriteLine("# " + s);
@@ -233,24 +238,30 @@ public static class SpotifyHudBeat
                 rate = 44100; chans = 2; isFloat = false; bits = 16;
                 string why = "";
                 int[] flagSets = new int[] { FLAG_LOOPBACK | FLAG_EVENT | FLAG_NOPERSIST,
+                                             FLAG_LOOPBACK | FLAG_EVENT,
                                              FLAG_LOOPBACK | FLAG_EVENT | FLAG_NOPERSIST | FLAG_AUTOCONVERT | FLAG_SRC,
-                                             FLAG_LOOPBACK | FLAG_NOPERSIST | FLAG_AUTOCONVERT | FLAG_SRC };
+                                             FLAG_LOOPBACK | FLAG_NOPERSIST,
+                                             FLAG_LOOPBACK };
+                long[] durations = new long[] { 200000, 0, 2000000 };
                 bool classic = false;
                 for (int fi = 0; fi < flagSets.Length && client == null; fi++)
                 {
-                    try
+                    for (int di = 0; di < durations.Length && client == null; di++)
                     {
-                        Handler h;
-                        IAudioClient c = Activate(pid, loopMode, out h);
-                        if (c == null) { why = "activate=" + h.Result.ToString("X"); continue; }
-                        int hr = c.Initialize(0, flagSets[fi], 2000000, 0, fmt, IntPtr.Zero);
-                        if (hr < 0) { why = "init=" + hr.ToString("X"); continue; }
-                        if ((flagSets[fi] & FLAG_EVENT) != 0) c.SetEventHandle(evt);
-                        client = c;
-                    }
-                    catch (Exception ex)
-                    {
-                        why = ex.GetType().Name + " " + ex.Message.Replace('\n', ' ');
+                        try
+                        {
+                            Handler h;
+                            IAudioClient c = Activate(pid, loopMode, out h);
+                            if (c == null) { AddWhy(ref why, "act" + h.Result.ToString("X")); continue; }
+                            int hr = c.Initialize(0, flagSets[fi], durations[di], 0, fmt, IntPtr.Zero);
+                            if (hr < 0) { AddWhy(ref why, "f" + fi + "d" + di + "=" + hr.ToString("X")); continue; }
+                            if ((flagSets[fi] & FLAG_EVENT) != 0) c.SetEventHandle(evt);
+                            client = c;
+                        }
+                        catch (Exception ex)
+                        {
+                            AddWhy(ref why, ex.GetType().Name);
+                        }
                     }
                 }
                 if (client == null)
