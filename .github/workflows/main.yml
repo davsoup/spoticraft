@@ -1,6 +1,9 @@
 name: build
 on: [push, workflow_dispatch]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -21,3 +24,11 @@ jobs:
         with:
           name: Artifacts
           path: spotifyhud/build/libs/
+      - name: Publish jar as a release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(grep '^mod_version' spotifyhud/gradle.properties | cut -d= -f2)
+          gh release delete "v$V" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "v$V" spotifyhud/build/libs/spotifyhud-$V.jar --title "spotifyhud $V" --notes "Built automatically"
