@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "spotifyhud",
+  "version": "${version}",
+  "name": "Spotify HUD",
+  "description": "Shows what you're playing on Spotify in-game and lets you change volume, skip tracks and seek, via keybinds and /spotify commands.",
+  "authors": ["you"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.spotifyhud.SpotifyHudClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
