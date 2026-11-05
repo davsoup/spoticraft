@@ -24,6 +24,9 @@ final class HudPanel {
     // spin state (render thread)
     private static double spinAngle = 0;
     private static long lastNs = 0;
+    private static double armLift = 0;
+    /** Queue-peek row under the mouse on the control screen (-1 = none). */
+    static int peekHover = -1;
 
     // baked glow textures (render thread)
     private static final int DEN = 3;
@@ -54,9 +57,9 @@ final class HudPanel {
         int titleH = (int) Math.ceil(9 * ts);
         int artistH = (int) Math.ceil(9 * as);
         int content = titleH + 2 + artistH + 6 + BAR_H + 3 + 9;
-        if (cfg.style == 1) {
-            int d = Math.max(40, Math.min(220, cfg.cdSize));
-            if (!cfg.cdText) {
+        if (cfg.style != 0) {
+            int d = Math.max(40, Math.min(220, cfg.dSize()));
+            if (!cfg.dText()) {
                 int w = d + 8;
                 int h = 4 + d + 4 + (cfg.modeIndicators ? 13 : 0);
                 return new Layout(1, false, w, h, 4, 4, d, 0, w, 0, 0, 0, 0, ts, as, titleH, artistH, 0, 4 + d + 4);
@@ -79,7 +82,7 @@ final class HudPanel {
 
     /** Scale applied to the whole block card (the CD resizes only its disc). */
     static double scaleOf(SpotifyConfig cfg) {
-        if (cfg.style == 1 || !Gfx.poseUsable()) return 1.0;
+        if (cfg.style != 0 || !Gfx.poseUsable()) return 1.0;
         return Math.max(0.5, Math.min(3.0, cfg.hudScale));
     }
 
@@ -126,6 +129,11 @@ final class HudPanel {
             spinAngle += 1.1 * Math.min(0.1, (now - lastNs) / 1e9);
             if (spinAngle > Math.PI * 2) spinAngle -= Math.PI * 2;
         }
+        if (lastNs != 0) {
+            double dt = Math.min(0.1, (now - lastNs) / 1e9);
+            double target = s.playing() ? 0.0 : 1.0;
+            armLift += (target - armLift) * Math.min(1.0, dt * 5.0);
+        }
         lastNs = now;
 
         int accent = art != null ? art.accent() : 0xFFFFFFFF;
@@ -168,14 +176,15 @@ final class HudPanel {
             }
             return;
         }
-        // CD
-        drawDisc(g, font, art, L, x, y);
+        // CD / vinyl
+        if (cfg.style == 2) drawVinyl(g, font, cfg, s, art, L, x, y, progOv);
+        else drawDisc(g, font, art, L, x, y);
         if (L.text()) {
             int px = x + (L.w() - CD_W) / 2;
             int py = y + L.textTop();
             int pw = CD_W;
             int ph = L.h() - L.textTop();
-            drawBox(g, art, px, py, pw, ph, smallRadius(cfg), cfg.cdBgMode, cfg, 0xB0, 0x30, t);
+            drawBox(g, art, px, py, pw, ph, smallRadius(cfg), cfg.dBox(), cfg, 0xB0, cfg.dDark(), t);
             content(g, font, cfg, s, art, L, x, y, interactive, progOv);
         } else if (cfg.modeIndicators) {
             badges(g, font, s, false, x + L.w() / 2, y + L.badgeY());
@@ -191,7 +200,7 @@ final class HudPanel {
         boolean cd = L.style() == 1;
         if (!cd) drawArtSquare(g, font, art, x + L.artX(), y + L.artY(), L.artS());
 
-        int align = cd ? cfg.alignCd : cfg.alignBlock;
+        int align = cfg.textAlign();
         int titleCol = 0xFF000000 | textRGB;
         int artistCol = 0xFF000000 | dim(textRGB, 0.82);
         int timeCol = 0xFF000000 | dim(textRGB, 0.62);
@@ -374,6 +383,180 @@ final class HudPanel {
             }
         } else {
             drawArtSquare(g, font, art, cx - 32, cy - 32, 64);
+        }
+    }
+
+    // ------------------------------------------------------------ vinyl record
+
+    private static void drawVinyl(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, PlaybackState s, AlbumArt art,
+                                  Layout L, int x, int y, long progOv) {
+        int d = L.artS();
+        int cx = x + L.artX() + d / 2;
+        int cy = y + L.artY() + d / 2;
+        net.minecraft.resources.Identifier id = null;
+        if (art != null) id = cfg.vinylTint && art.vinylTintId != null ? art.vinylTintId : art.vinylId;
+        if (id != null) {
+            if (Gfx.canRotate(g)) {
+                Gfx.push(g);
+                Gfx.translate(g, cx, cy);
+                Gfx.rotate(g, (float) (spinAngle * 0.6));
+                Gfx.blit(g, id, -d / 2, -d / 2, d, d, AlbumArt.TEX, AlbumArt.TEX);
+                Gfx.pop(g);
+            } else {
+                Gfx.blit(g, id, cx - d / 2, cy - d / 2, d, d, AlbumArt.TEX, AlbumArt.TEX);
+            }
+        } else {
+            drawArtSquare(g, font, art, cx - 32, cy - 32, 64);
+        }
+        if (!cfg.vinylArm) return;
+        long progress = progOv >= 0 ? progOv : s.liveProgressMs();
+        double frac = s.durationMs() > 0 ? Math.min(1.0, (double) progress / s.durationMs()) : 0.0;
+        double rr = d * (0.47 - 0.26 * frac);
+        rr += (d * 0.62 - rr) * armLift;                 // lifts off the record when paused
+        double ang = Math.toRadians(-18 + 10 * armLift);
+        double tipX = cx + rr * Math.cos(ang);
+        double tipY = cy + rr * Math.sin(ang);
+        double pivX = cx + d * 0.5 - 1;
+        double pivY = cy - d * 0.5 + 3;
+        int rgb = (cfg.vinylArmColor < 0 ? (art != null ? art.accent() : 0xFFFFFFFF) : cfg.vinylArmColor) & 0xFFFFFF;
+        line(g, pivX + 2, pivY + 2, tipX + 2, tipY + 2, 2, 0x66000000);
+        line(g, pivX, pivY, tipX, tipY, 2, 0xFF000000 | rgb);
+        int hx = (int) Math.round(tipX), hy = (int) Math.round(tipY);
+        g.fill(hx - 3, hy - 2, hx + 3, hy + 3, 0xFF000000 | dim(rgb, 0.75));
+        int px = (int) Math.round(pivX), py = (int) Math.round(pivY);
+        g.fill(px - 4, py - 4, px + 4, py + 4, 0xFF000000 | dim(rgb, 0.55));
+        g.fill(px - 2, py - 2, px + 2, py + 2, 0xFF000000 | rgb);
+    }
+
+    private static void line(GuiGraphicsExtractor g, double x0, double y0, double x1, double y1, int th, int color) {
+        int steps = (int) Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))));
+        for (int i = 0; i <= steps; i++) {
+            int px = (int) Math.round(x0 + (x1 - x0) * i / steps);
+            int py = (int) Math.round(y0 + (y1 - y0) * i / steps);
+            g.fill(px, py, px + th, py + th, color);
+        }
+    }
+
+    // ------------------------------------------------------------ queue peek
+
+    static final int PEEK_W = 150, PEEK_ROW = 20, PEEK_HEAD = 12;
+
+    static int peekHeight(int n) {
+        return PEEK_HEAD + n * PEEK_ROW + 3;
+    }
+
+    /** Where the queue peek sits: {x, y, w, h}. */
+    static int[] peekRect(SpotifyConfig cfg, int n, int cardX, int cardY, int cardW, int cardH,
+                          boolean interactive, int screenW) {
+        int h = peekHeight(n);
+        int side = cfg.queuePeekSide;
+        if (side == 0 && screenW > 0 && cardX + cardW + 6 + PEEK_W > screenW) side = 1;
+        if (side == 1 && cardX - 6 - PEEK_W < 0) side = screenW > 0 && cardX + cardW + 6 + PEEK_W <= screenW ? 0 : 2;
+        return switch (side) {
+            case 0 -> new int[]{cardX + cardW + 6, cardY, PEEK_W, h};
+            case 1 -> new int[]{cardX - 6 - PEEK_W, cardY, PEEK_W, h};
+            default -> new int[]{cardX, cardY + cardH + 4 + (interactive ? 94 : 3), PEEK_W, h};
+        };
+    }
+
+    static void peek(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art,
+                     java.util.List<SpotifyApi.Item> items, CoverCache covers, int[] R) {
+        int n = Math.min(items.size(), cfg.queuePeekCount);
+        if (n <= 0) return;
+        int accent = art != null ? art.accent() : 0xFFFFFFFF;
+        int textRGB = (cfg.queuePeekColor < 0 ? accent : cfg.queuePeekColor) & 0xFFFFFF;
+        double t = cfg.motion ? System.nanoTime() / 1e9 : 0.0;
+        int r = cfg.rounded ? 5 : 0;
+        drawBox(g, art, R[0], R[1], R[2], R[3], r, cfg.queuePeekBg, cfg, 0xC8, cfg.queuePeekDarkness, t);
+        g.text(font, "Up next", R[0] + 6, R[1] + 3, 0xFF000000 | dim(textRGB, 0.65), true);
+        for (int i = 0; i < n; i++) {
+            SpotifyApi.Item it = items.get(i);
+            int ry = R[1] + PEEK_HEAD + i * PEEK_ROW;
+            if (i == peekHover) roundR(g, R[0] + 2, ry, R[2] - 4, PEEK_ROW, 0x30FFFFFF, cfg.rounded ? 3 : 0);
+            int tx = R[0] + 6;
+            if (cfg.queuePeekCovers) {
+                int cs = 16;
+                net.minecraft.resources.Identifier id = covers == null ? null : covers.get(it.art());
+                if (id == null || !Gfx.blit(g, id, tx, ry + 2, cs, cs, CoverCache.SIZE, CoverCache.SIZE)) {
+                    round(g, tx, ry + 2, cs, cs, 0xFF3A3A3A);
+                }
+                tx += cs + 5;
+            }
+            int colW = R[0] + R[2] - 6 - tx;
+            aligned(g, font, cfg, it.name(), tx, colW, ry + 1, 0xFF000000 | textRGB, true, 1.0, 0);
+            aligned(g, font, cfg, it.sub(), tx, colW, ry + 10, 0xFF000000 | dim(textRGB, 0.65), true, 1.0, 0);
+        }
+    }
+
+    /** Index of the queue-peek row at (mx, my), or -1. */
+    static int peekRow(SpotifyConfig cfg, int n, int[] R, double mx, double my) {
+        n = Math.min(n, cfg.queuePeekCount);
+        for (int i = 0; i < n; i++) {
+            int ry = R[1] + PEEK_HEAD + i * PEEK_ROW;
+            if (mx >= R[0] && mx < R[0] + R[2] && my >= ry && my < ry + PEEK_ROW) return i;
+        }
+        return -1;
+    }
+
+    // ------------------------------------------------------------ ambient screen-edge glow
+
+    private static int lerpRgb(int a, int b, double f) {
+        int r = (int) (((a >> 16) & 0xFF) * (1 - f) + ((b >> 16) & 0xFF) * f);
+        int gg = (int) (((a >> 8) & 0xFF) * (1 - f) + ((b >> 8) & 0xFF) * f);
+        int bl = (int) ((a & 0xFF) * (1 - f) + (b & 0xFF) * f);
+        return (r << 16) | (gg << 8) | bl;
+    }
+
+    private static int paletteAt(int[] pal, double k) {
+        int n = pal.length;
+        k = ((k % n) + n) % n;
+        int i = (int) Math.floor(k);
+        return lerpRgb(pal[i] & 0xFFFFFF, pal[(i + 1) % n] & 0xFFFFFF, k - i);
+    }
+
+    /** Soft colour wash along the screen edges, tinted by the album. */
+    static void ambient(GuiGraphicsExtractor g, SpotifyConfig cfg, AlbumArt art, int sw, int sh) {
+        if (!cfg.ambient || cfg.ambientIntensity <= 0 || art == null || sw <= 0 || sh <= 0) return;
+        double t = cfg.motion ? System.nanoTime() / 1e9 : 0.0;
+        int size = Math.min(cfg.ambientSize, Math.min(sw, sh) / 2);
+        final int LAYERS = 14;
+        int step = Math.max(1, size / LAYERS);
+        int layers = Math.max(1, size / step);
+        double pulse = cfg.motion ? 1.0 + 0.15 * Math.sin(t * 0.8) : 1.0;
+        double peak = 0.55 * cfg.ambientIntensity / 100.0 * pulse;
+        boolean mo = cfg.ambientMograph;
+        int[] pal = art.palette();
+        int base = (cfg.ambientColor < 0 ? art.accent() : cfg.ambientColor) & 0xFFFFFF;
+        double speed = 0.05 * cfg.ambientSpeed;
+        for (int e = 0; e < 4; e++) {
+            boolean horiz = e == 0 || e == 2;
+            if (cfg.ambientEdges == 1 && horiz) continue;
+            if (cfg.ambientEdges == 2 && !horiz) continue;
+            int segs = mo ? (horiz ? 10 : 7) : 1;
+            int len = horiz ? sw : sh;
+            for (int sg = 0; sg < segs; sg++) {
+                int a0 = len * sg / segs, a1 = len * (sg + 1) / segs;
+                double u = (e + (sg + 0.5) / segs) / 4.0;
+                int rgb = base;
+                double mod = 1.0;
+                if (mo) {
+                    if (cfg.ambientColor < 0 && pal.length > 1) rgb = paletteAt(pal, u * pal.length + t * speed * pal.length * 0.25);
+                    mod = 0.7 + 0.3 * Math.sin(t * (0.4 + speed * 4) + u * Math.PI * 4);
+                }
+                for (int i = 0; i < layers; i++) {
+                    double a = peak * mod * Math.pow(1.0 - (i + 0.5) / layers, 2.2);
+                    int ai = (int) Math.min(255, Math.round(a * 255));
+                    if (ai < 1) continue;
+                    int col = (ai << 24) | rgb;
+                    int d0 = i * step, d1 = (i + 1) * step;
+                    switch (e) {
+                        case 0 -> g.fill(a0, d0, a1, d1, col);
+                        case 2 -> g.fill(a0, sh - d1, a1, sh - d0, col);
+                        case 1 -> g.fill(sw - d1, a0, sw - d0, a1, col);
+                        default -> g.fill(d0, a0, d1, a1, col);
+                    }
+                }
+            }
         }
     }
 
@@ -560,8 +743,17 @@ final class HudPanel {
     }
 
     /** Current lyric (bright) and next lyric (dim), wrapped onto as many pill lines as they need. */
+    static int mulA(int c, double f) {
+        int a = (int) Math.round(((c >>> 24) & 0xFF) * Math.max(0, Math.min(1, f)));
+        return (a << 24) | (c & 0xFFFFFF);
+    }
+
     static void lyrics(GuiGraphicsExtractor g, Font font, SpotifyConfig cfg, AlbumArt art, String cur, String next,
-                       int x, int y, int boxW, int align) {
+                       int x, int y, int boxW, int align, double appear, double flash, double nextFade, double fill) {
+        if (!cfg.lyricsFlash) flash = 0;
+        if (!cfg.lyricsKaraoke) fill = -1;
+        int fillRGB = (cfg.lyricsFillColor < 0 ? (art != null ? art.accent() : 0xFFFFFFFF) : cfg.lyricsFillColor) & 0xFFFFFF;
+        int accentRGB = (art != null ? art.accent() : 0xFFFFFFFF) & 0xFFFFFF;
         double sc = cfg.lyricsScale / 100.0;
         int ph = lyricsPillH(cfg);
         int padX = (int) Math.round(5 * sc);
@@ -570,6 +762,10 @@ final class HudPanel {
         List<String> curLines = wrap(font, cur, max, 3);
         List<String> nextLines = wrap(font, next, max, 2);
         int total = curLines.size() + nextLines.size();
+        double curTotalW = 0;
+        for (String cl : curLines) curTotalW += font.width(cl);
+        double filledPx = fill < 0 ? -1 : fill * curTotalW;
+        double offW = 0;
         for (int n = 0; n < total; n++) {
             boolean bright = n < curLines.size();
             String f = bright ? curLines.get(n) : nextLines.get(n - curLines.size());
@@ -577,14 +773,23 @@ final class HudPanel {
             int w = tw + 2 * padX;
             int px = align == 1 ? x + (boxW - w) / 2 : align == 2 ? x + boxW - w : x;
             int py = y + n * (ph + 1);
+            double al = bright ? appear : nextFade;
+            if (bright) py += (int) Math.round((1 - appear) * (ph + 1));
+            if (al < 0.03) continue;
             int r = cfg.rounded ? 3 : 0;
+            if (bright && flash > 0.02) {
+                for (int k = 3; k >= 1; k--) {
+                    int a = (int) (flash * 46 / k);
+                    roundR(g, px - k * 2, py - k * 2, w + k * 4, ph + k * 4, (a << 24) | accentRGB, r + k * 2);
+                }
+            }
             switch (cfg.lyricsBgMode) {
-                case 0 -> roundR(g, px, py, w, ph, bright ? 0x99000000 : 0x77000000, r);
+                case 0 -> roundR(g, px, py, w, ph, mulA(bright ? 0x99000000 : 0x77000000, al), r);
                 case 1 -> {
                     int a = bright ? 0xD0 : 0xA0;
                     int col = cfg.lyricsBgColor < 0 ? (art != null ? art.darkAverage(a) : (a << 24) | 0x202020)
                             : (a << 24) | (cfg.lyricsBgColor & 0xFFFFFF);
-                    roundR(g, px, py, w, ph, col, r);
+                    roundR(g, px, py, w, ph, mulA(col, al), r);
                 }
                 case 2 -> {
                     if (spillRect(g, art, px, py, w, ph, r, t)) roundR(g, px, py, w, ph, bright ? 0x38000000 : 0x60000000, r);
@@ -593,7 +798,35 @@ final class HudPanel {
                 default -> {
                 }
             }
-            Gfx.text(g, font, f, px + padX, py + (int) Math.round(2 * sc), bright ? WHITE : 0xFFB8B8B8, bright, sc);
+            int tx = px + padX, ty = py + (int) Math.round(2 * sc);
+            if (bright && flash > 0.04) {
+                int ha = (int) (flash * 110);
+                if (ha >= 6) {
+                    int hc = (ha << 24) | accentRGB;
+                    Gfx.text(g, font, f, tx - 1, ty, hc, false, sc);
+                    Gfx.text(g, font, f, tx + 1, ty, hc, false, sc);
+                    Gfx.text(g, font, f, tx, ty - 1, hc, false, sc);
+                    Gfx.text(g, font, f, tx, ty + 1, hc, false, sc);
+                }
+            }
+            int ta = (int) Math.round(255 * al);
+            if (ta >= 6 && bright && filledPx >= 0) {
+                double lw = font.width(f);
+                double part = Math.max(0, Math.min(lw, filledPx - offW));
+                offW += lw;
+                Gfx.text(g, font, f, tx, ty, (ta << 24) | 0xA8A8A8, true, sc);       // not sung yet
+                if (part > 0) {
+                    int cutX = tx + (int) Math.ceil(part * sc);
+                    if (part >= lw - 0.5) {
+                        Gfx.text(g, font, f, tx, ty, (ta << 24) | fillRGB, true, sc);
+                    } else if (Gfx.scissorOn(g, tx - 1, py - 1, cutX, py + ph + 1)) {
+                        Gfx.text(g, font, f, tx, ty, (ta << 24) | fillRGB, true, sc);
+                        Gfx.scissorOff(g);
+                    }
+                }
+            } else if (ta >= 6) {
+                Gfx.text(g, font, f, tx, ty, (ta << 24) | (bright ? 0xFFFFFF : 0xB8B8B8), bright && al > 0.9, sc);
+            }
         }
     }
 

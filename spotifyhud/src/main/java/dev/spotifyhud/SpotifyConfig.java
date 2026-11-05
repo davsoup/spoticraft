@@ -18,7 +18,7 @@ public final class SpotifyConfig {
     public int pollIntervalMs = 2000;
     public boolean showHud = true;
     public boolean showLyrics = true;
-    /** 0 = block card, 1 = spinning CD. */
+    /** 0 = block card, 1 = spinning CD, 2 = vinyl record. */
     public int style = 0;
     /** Text alignment per style: 0 left, 1 center, 2 right. */
     public int alignBlock = 0;
@@ -59,6 +59,8 @@ public final class SpotifyConfig {
     public int alignLyrics = 0;
     /** Extra distance between the lyrics and the card (-30 .. 120). */
     public int lyricsOffset = 0;
+    /** Glow flash when a new lyric line starts. */
+    public boolean lyricsFlash = true;
     public int glowSpread = 14;
     public int glowSoftness = 60;
     public int glowStrength = 60;
@@ -68,6 +70,74 @@ public final class SpotifyConfig {
     public int barColor = 0xFFFFFF;
     public int hudX = 8;
     public int hudY = 40;
+
+    // ---- per-style darkness (CD / vinyl text box)
+    public int cdDarkness = 48;
+    public int vinylDarkness = 48;
+
+    // ---- vinyl style
+    public boolean vinylText = true;
+    public int alignVinyl = 1;
+    public int vinylBgMode = 1;
+    public int vinylSize = 110;
+    /** Record body: false = black, true = tinted with the album colour. */
+    public boolean vinylTint = false;
+    public boolean vinylArm = true;
+    /** Tonearm colour (RGB) or -1 for the album accent. */
+    public int vinylArmColor = 0xC8C8C8;
+
+    // ---- karaoke lyric fill
+    public boolean lyricsKaraoke = true;
+    public int lyricsFillColor = -1;
+
+    // ---- queue peek
+    public boolean queuePeek = true;
+    /** Also show it on the in-game HUD (otherwise only on the control screen). */
+    public boolean queuePeekHud = false;
+    public int queuePeekCount = 3;
+    /** 0 = right of the card, 1 = left, 2 = below. */
+    public int queuePeekSide = 0;
+    public boolean queuePeekCovers = true;
+    /** 0 = mograph, 1 = solid, 2 = none. */
+    public int queuePeekBg = 0;
+    public int queuePeekDarkness = 35;
+    public int queuePeekColor = 0xFFFFFF;
+
+    // ---- ambient screen-edge glow
+    public boolean ambient = true;
+    public int ambientSize = 90;
+    public int ambientIntensity = 30;
+    public int ambientColor = -1;
+    public boolean ambientMograph = true;
+    /** 0 = all edges, 1 = left/right, 2 = top/bottom. */
+    public int ambientEdges = 0;
+    public int ambientSpeed = 4;
+
+    // ---- helpers: settings that depend on the current disc style (1 = CD, 2 = vinyl)
+    public int dSize() {
+        return style == 2 ? vinylSize : cdSize;
+    }
+
+    public void setDSize(int v) {
+        if (style == 2) vinylSize = v;
+        else cdSize = v;
+    }
+
+    public boolean dText() {
+        return style == 2 ? vinylText : cdText;
+    }
+
+    public int dBox() {
+        return style == 2 ? vinylBgMode : cdBgMode;
+    }
+
+    public int dDark() {
+        return style == 2 ? vinylDarkness : cdDarkness;
+    }
+
+    public int textAlign() {
+        return style == 2 ? alignVinyl : style == 1 ? alignCd : alignBlock;
+    }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
@@ -82,7 +152,7 @@ public final class SpotifyConfig {
             cfg.volumeStep = Math.max(1, cfg.volumeStep);
             cfg.seekStepSeconds = Math.max(1, cfg.seekStepSeconds);
             cfg.pollIntervalMs = Math.max(1000, cfg.pollIntervalMs); // be nice to Spotify's rate limits
-            cfg.style = Math.max(0, Math.min(1, cfg.style));
+            cfg.style = Math.max(0, Math.min(2, cfg.style));
             cfg.alignBlock = Math.max(0, Math.min(2, cfg.alignBlock));
             cfg.alignCd = Math.max(0, Math.min(2, cfg.alignCd));
             cfg.titleScale = Math.max(1.0f, Math.min(2.0f, cfg.titleScale));
@@ -100,11 +170,28 @@ public final class SpotifyConfig {
             cfg.artOffY = Math.max(-20, Math.min(20, cfg.artOffY));
             cfg.lyricsScale = Math.max(70, Math.min(200, cfg.lyricsScale));
             cfg.lyricsBgMode = Math.max(0, Math.min(3, cfg.lyricsBgMode));
+            cfg.cdDarkness = cl(cfg.cdDarkness, 0, 80);
+            cfg.vinylDarkness = cl(cfg.vinylDarkness, 0, 80);
+            cfg.alignVinyl = cl(cfg.alignVinyl, 0, 2);
+            cfg.vinylBgMode = cl(cfg.vinylBgMode, 0, 2);
+            cfg.vinylSize = cl(cfg.vinylSize, 40, 220);
+            cfg.queuePeekCount = cl(cfg.queuePeekCount, 1, 5);
+            cfg.queuePeekSide = cl(cfg.queuePeekSide, 0, 2);
+            cfg.queuePeekBg = cl(cfg.queuePeekBg, 0, 2);
+            cfg.queuePeekDarkness = cl(cfg.queuePeekDarkness, 0, 80);
+            cfg.ambientSize = cl(cfg.ambientSize, 20, 200);
+            cfg.ambientIntensity = cl(cfg.ambientIntensity, 0, 100);
+            cfg.ambientEdges = cl(cfg.ambientEdges, 0, 2);
+            cfg.ambientSpeed = cl(cfg.ambientSpeed, 1, 10);
             cfg.save(file); // writes defaults on first run, and normalises the file
         } catch (IOException | RuntimeException e) {
             // Broken JSON etc: keep defaults, don't crash the game.
         }
         return cfg;
+    }
+
+    private static int cl(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
     }
 
     public void save(Path file) throws IOException {

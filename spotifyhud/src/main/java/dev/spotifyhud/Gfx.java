@@ -40,6 +40,32 @@ final class Gfx {
     private Gfx() {
     }
 
+    // ============================================================ screen size
+
+    private static boolean sizeTried;
+    private static Method mWindow, mGuiW, mGuiH;
+
+    /** GUI-scaled screen size {w, h}, or {0, 0} if it can't be read. */
+    static int[] screenSize() {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (!sizeTried) {
+                sizeTried = true;
+                mWindow = find(Minecraft.class, "getWindow");
+                if (mWindow != null) {
+                    Class<?> wc = mWindow.getReturnType();
+                    mGuiW = find(wc, "getGuiScaledWidth");
+                    mGuiH = find(wc, "getGuiScaledHeight");
+                }
+            }
+            if (mc == null || mWindow == null || mGuiW == null || mGuiH == null) return new int[]{0, 0};
+            Object win = mWindow.invoke(mc);
+            return new int[]{((Number) mGuiW.invoke(win)).intValue(), ((Number) mGuiH.invoke(win)).intValue()};
+        } catch (Throwable t) {
+            return new int[]{0, 0};
+        }
+    }
+
     // ============================================================ matrix stack
 
     private static Method find(Class<?> c, String name, Class<?>... params) {

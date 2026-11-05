@@ -32,7 +32,8 @@ final class AlbumArt {
     }
 
     private final String url;
-    private volatile byte[] artPng, discPng, spillPng;
+    private volatile byte[] artPng, discPng, spillPng, vinylPng, vinylTintPng;
+    private volatile int[] palette = new int[]{0xFFFFFFFF};
     private volatile int[] pixels;           // FALLBACK x FALLBACK ARGB
     private volatile int average = 0xFF202020;
     private volatile int accent = 0xFFFFFFFF;
@@ -40,7 +41,7 @@ final class AlbumArt {
 
     // render-thread state
     private boolean texTried;
-    Identifier artId, discId, spillId;
+    Identifier artId, discId, spillId, vinylId, vinylTintId;
 
     AlbumArt(String url) {
         this.url = url == null ? "" : url;
@@ -53,6 +54,11 @@ final class AlbumArt {
     /** Bright, pleasant colour picked from the cover (RGB with full alpha). */
     int accent() {
         return accent;
+    }
+
+    /** Colours from around the cover's border (RGB, full alpha), used by the ambient mograph. */
+    int[] palette() {
+        return palette;
     }
 
     /** Dark version of the cover's average colour, with the given alpha. */
@@ -72,16 +78,22 @@ final class AlbumArt {
         artId = Gfx.registerPng(artPng, "art/" + n + "a");
         discId = Gfx.registerPng(discPng, "art/" + n + "d");
         spillId = Gfx.registerPng(spillPng, "art/" + n + "s");
+        vinylId = Gfx.registerPng(vinylPng, "art/" + n + "v");
+        vinylTintId = Gfx.registerPng(vinylTintPng, "art/" + n + "t");
         artPng = null;
         discPng = null;
         spillPng = null;
+        vinylPng = null;
+        vinylTintPng = null;
     }
 
     void release() {
         Gfx.release(artId);
         Gfx.release(discId);
         Gfx.release(spillId);
-        artId = discId = spillId = null;
+        Gfx.release(vinylId);
+        Gfx.release(vinylTintId);
+        artId = discId = spillId = vinylId = vinylTintId = null;
     }
 
     void load(HttpClient http, Executor ex) {
@@ -167,6 +179,18 @@ final class AlbumArt {
         byte[] artBytes = png(roundedArt(a));
         byte[] discBytes = png(disc(a));
         byte[] spillBytes = png(spill(cells, G));
+        // palette: the 20 border cells of the 6x6 grid, boosted, in clockwise order
+        int[] pal = new int[4 * (G - 1)];
+        int pi = 0;
+        for (int i = 0; i < G - 1; i++) pal[pi++] = cellRgb(cells[0][i]);
+        for (int j = 0; j < G - 1; j++) pal[pi++] = cellRgb(cells[j][G - 1]);
+        for (int i = G - 1; i > 0; i--) pal[pi++] = cellRgb(cells[G - 1][i]);
+        for (int j = G - 1; j > 0; j--) pal[pi++] = cellRgb(cells[j][0]);
+        palette = pal;
+        byte[] vinylBytes = png(vinyl(a, 0xFF0B0B0B));
+        byte[] vinylTintBytes = png(vinyl(a, mix(average, 0xFF000000, 0.72)));
+        vinylPng = vinylBytes;
+        vinylTintPng = vinylTintBytes;
         artPng = artBytes;
         discPng = discBytes;
         spillPng = spillBytes;
@@ -175,7 +199,7 @@ final class AlbumArt {
     }
 
     /** Centre-crops to a square and box-filters down to size x size (opaque ARGB). */
-    private static int[] resample(BufferedImage src, int size) {
+    static int[] resample(BufferedImage src, int size) {
         int w = src.getWidth();
         int h = src.getHeight();
         int side = Math.min(w, h);
@@ -237,6 +261,42 @@ final class AlbumArt {
                 int p = a[y * TEX + x];
                 if (r < ring) p = mix(p, 0xFF101010, 0.55 * clamp01((ring - r) / 3.0));
                 if (r > R - 4) p = mix(p, 0xFF000000, 0.3 * clamp01((r - (R - 4)) / 4.0));
+                o[y * TEX + x] = withAlpha(p, cover);
+            }
+        }
+        return o;
+    }
+
+    private static int cellRgb(float[] c) {
+        return 0xFF000000 | ((int) c[0] << 16) | ((int) c[1] << 8) | (int) c[2];
+    }
+
+    /** Vinyl record: coloured body with fine grooves, the cover as the centre label, and a spindle dot. */
+    private static int[] vinyl(int[] a, int body) {
+        int[] o = new int[TEX * TEX];
+        double c = TEX / 2.0;
+        double R = TEX / 2.0;
+        double label = R * 0.36;
+        for (int y = 0; y < TEX; y++) {
+            for (int x = 0; x < TEX; x++) {
+                double dx = x + 0.5 - c;
+                double dy = y + 0.5 - c;
+                double r = Math.sqrt(dx * dx + dy * dy);
+                double cover = clamp01(R - r);
+                if (cover <= 0) continue;
+                int p;
+                if (r < label) {
+                    int sx = (int) Math.max(0, Math.min(TEX - 1, (dx / label * 0.5 + 0.5) * TEX));
+                    int sy = (int) Math.max(0, Math.min(TEX - 1, (dy / label * 0.5 + 0.5) * TEX));
+                    p = a[sy * TEX + sx];
+                    if (r < R * 0.035) p = 0xFF080808;
+                    else if (r > label - 1.5) p = mix(p, 0xFF000000, 0.5);
+                } else {
+                    double groove = 0.5 + 0.5 * Math.sin(r * 2.1);
+                    double band = (r > R * 0.9) ? 0.0 : 1.0;   // smooth outer rim
+                    p = mix(body, 0xFF3A3A3A, 0.10 * groove * band + 0.05 * Math.sin(r * 0.37));
+                    if (r < label + 3) p = mix(p, 0xFF000000, 0.5);
+                }
                 o[y * TEX + x] = withAlpha(p, cover);
             }
         }

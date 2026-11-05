@@ -14,6 +14,7 @@ public final class SpotifyScreen extends BaseScreen {
     /** Last time this screen drew; the normal HUD hides itself while this is fresh. */
     static volatile long lastRender = 0;
 
+    private static final String[] STYLE_NAMES = {"Block", "CD", "Vinyl"};
     private static final int NONE = 0, MOVE = 1, SEEK = 2, VOL = 3, RESIZE = 4;
     private static final int BTN_W = 26, BTN_H = 14, BTN_GAP = 6, HANDLE = 6, PB = 5, PB_GAP = 4;
 
@@ -65,6 +66,9 @@ public final class SpotifyScreen extends BaseScreen {
         PlaybackState s = c.state;
         SpotifyConfig cfg = c.config;
         long progOv = mode == SEEK ? (long) (seekFrac * s.durationMs()) : -1;
+        HudPanel.peekHover = -1;
+        int[] pr = c.peekRectNow(true);
+        if (pr != null) HudPanel.peekHover = HudPanel.peekRow(cfg, c.queueItems.size(), pr, mouseX, mouseY);
         c.drawHud(g, true, progOv);
 
         int x = cfg.hudX;
@@ -98,7 +102,7 @@ public final class SpotifyScreen extends BaseScreen {
         HudPanel.button(g, font, "Lyrics: " + (cfg.showLyrics ? "On" : "Off"), x, r2, hw, BTN_H, inRect(mouseX, mouseY, x, r2, hw, BTN_H));
         HudPanel.button(g, font, "HUD: " + (cfg.showHud ? "On" : "Off"), x + hw + BTN_GAP, r2, hw, BTN_H,
                 inRect(mouseX, mouseY, x + hw + BTN_GAP, r2, hw, BTN_H));
-        HudPanel.button(g, font, "Style: " + (cfg.style == 0 ? "Block" : "CD"), x, r3, hw, BTN_H, inRect(mouseX, mouseY, x, r3, hw, BTN_H));
+        HudPanel.button(g, font, "Style: " + STYLE_NAMES[cfg.style], x, r3, hw, BTN_H, inRect(mouseX, mouseY, x, r3, hw, BTN_H));
         HudPanel.button(g, font, "Customize", x + hw + BTN_GAP, r3, hw, BTN_H,
                 inRect(mouseX, mouseY, x + hw + BTN_GAP, r3, hw, BTN_H));
         HudPanel.button(g, font, "Queue & Playlists", x, r4, w, BTN_H, inRect(mouseX, mouseY, x, r4, w, BTN_H));
@@ -119,6 +123,14 @@ public final class SpotifyScreen extends BaseScreen {
         int w = Math.max(c.panelW, 150);
         PlaybackState s = c.state;
 
+        int[] pr = c.peekRectNow(true);
+        if (pr != null) {
+            int row = HudPanel.peekRow(cfg, c.queueItems.size(), pr, mx, my);
+            if (row >= 0) {
+                c.skipToQueue(row);
+                return true;
+            }
+        }
         if (c.panelFull) {
             int[] r = HudPanel.resizeRect(cfg, x, y);
             for (int i = 0; i < 4; i++) {
@@ -173,7 +185,7 @@ public final class SpotifyScreen extends BaseScreen {
             return true;
         }
         if (inRect(mx, my, x, r3, hw, BTN_H)) {
-            cfg.style = cfg.style == 0 ? 1 : 0;
+            cfg.style = (cfg.style + 1) % 3;
             c.saveConfig();
             return true;
         }
@@ -224,9 +236,9 @@ public final class SpotifyScreen extends BaseScreen {
     private void resize(SpotifyConfig cfg, double mx, double my) {
         boolean right = corner % 2 == 1;
         boolean bottom = corner >= 2;
-        if (cfg.style == 1) {
+        if (cfg.style != 0) {
             int d = clamp((int) Math.max(Math.abs(mx - anchorX), Math.abs(my - anchorY)), 40, 220);
-            cfg.cdSize = d;
+            cfg.setDSize(d);
             int w = Math.max(HudPanel.CD_W, d + 8);
             cfg.hudX = right ? anchorX - (w - d) / 2 : anchorX - (w + d) / 2;
             cfg.hudY = bottom ? anchorY - 4 : anchorY - 4 - d;

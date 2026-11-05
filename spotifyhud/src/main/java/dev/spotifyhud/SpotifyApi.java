@@ -130,7 +130,10 @@ public final class SpotifyApi {
     // ---------------------------------------------------------------- browsing / queue
 
     /** A track, episode or playlist the browser can list. */
-    public record Item(String name, String sub, String uri, boolean track) {
+    public record Item(String name, String sub, String uri, boolean track, String art) {
+        public Item(String name, String sub, String uri, boolean track) {
+            this(name, sub, uri, track, "");
+        }
     }
 
     public java.util.List<Item> getQueue() throws IOException, InterruptedException, SpotifyException {
@@ -226,7 +229,18 @@ public final class SpotifyApi {
             JsonObject show = obj(t, "show");
             if (show != null) sb.append(str(show, "name"));
         }
-        out.add(new Item(str(t, "name"), sb.toString(), uri, true));
+        String art = "";
+        JsonObject album = obj(t, "album");
+        JsonArray imgs = album == null ? null : arr(album, "images");
+        if (imgs != null) {
+            for (JsonElement im : imgs) { // images are listed largest first; keep the smallest
+                if (im.isJsonObject()) {
+                    String u = str(im.getAsJsonObject(), "url");
+                    if (!u.isEmpty()) art = u;
+                }
+            }
+        }
+        out.add(new Item(str(t, "name"), sb.toString(), uri, true, art));
     }
 
     private void commandBody(String method, String path, String json) throws IOException, InterruptedException, SpotifyException {

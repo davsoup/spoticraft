@@ -68,6 +68,9 @@ public final class SpotifyHudClient implements ClientModInitializer {
     private volatile Screen pendingScreen;
 
     // track-change slide transition
+    private CoverCache covers;
+    private volatile long nextQueueAt = 0;
+    private final java.util.concurrent.atomic.AtomicBoolean queueBusy = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile PlaybackState lastFull;
     private volatile PlaybackState prevState;
     private volatile AlbumArt prevArt;
@@ -387,11 +390,59 @@ public final class SpotifyHudClient implements ClientModInitializer {
             }
             art = a;
             lyrics = new Lyrics();
+            nextQueueAt = 0; // refresh the queue peek for the new track
         }
         if (s.active() && config.showLyrics) lyrics.fetch(http, bg, s);
     }
 
     // ------------------------------------------------------------------ browser / queue
+
+    /** Keeps the queue-peek list fresh (every few seconds, and right after a track change). */
+    private void refreshQueueIfNeeded(boolean interactive) {
+        SpotifyConfig cfg = config;
+        if (!cfg.queuePeek || !(interactive || cfg.queuePeekHud) || !auth.hasLogin() || needsScopes) return;
+        long now = System.currentTimeMillis();
+        if (now < nextQueueAt || !queueBusy.compareAndSet(false, true)) return;
+        nextQueueAt = now + (interactive ? 6000 : 20000);
+        SpotifyApi a = api;
+        io.execute(() -> {
+            try {
+                queueItems = a.getQueue();
+            } catch (Exception ignored) {
+                // the peek just stays as it was
+            } finally {
+                queueBusy.set(false);
+            }
+        });
+    }
+
+    /** Where the queue peek is drawn right now, or null if it isn't shown. */
+    int[] peekRectNow(boolean interactive) {
+        SpotifyConfig cfg = config;
+        if (!panelFull || !cfg.queuePeek || !(interactive || cfg.queuePeekHud)) return null;
+        int n = Math.min(queueItems.size(), cfg.queuePeekCount);
+        if (n <= 0) return null;
+        int[] R = HudPanel.cardRect(cfg, cfg.hudX, cfg.hudY);
+        return HudPanel.peekRect(cfg, n, R[0], R[1], R[2], R[3], interactive, Gfx.screenSize()[0]);
+    }
+
+    /** Skip ahead so that queue entry {@code index} (0 = next song) starts playing. */
+    void skipToQueue(int index) {
+        if (!requireActive()) return;
+        java.util.List<SpotifyApi.Item> q = queueItems;
+        if (index < 0 || index >= q.size()) return;
+        queueItems = new java.util.ArrayList<>(q.subList(index + 1, q.size()));
+        SpotifyApi a = api;
+        int times = index + 1;
+        run(() -> {
+            for (int i = 0; i < times; i++) {
+                a.next();
+                if (i + 1 < times) Thread.sleep(150);
+            }
+            nextPollAt = System.currentTimeMillis() + 500;
+            nextQueueAt = System.currentTimeMillis() + 800;
+        });
+    }
 
     void openBrowser(int tab) {
         loadTab(tab, tab == 0);
@@ -566,6 +617,11 @@ public final class SpotifyHudClient implements ClientModInitializer {
         boolean full = false;
         int w = HudPanel.BLOCK_W;
         PlaybackState s = state;
+        if (covers == null) covers = new CoverCache(http, bg);
+        if (s.active() && cfg.clientId.isBlank() == false) {
+            int[] sz = Gfx.screenSize();
+            HudPanel.ambient(g, cfg, art, sz[0], sz[1]);
+        }
 
         if (cfg.clientId.isBlank()) {
             bottom = HudPanel.message(g, font, x, y, "Spotify HUD", "Set clientId in",
@@ -602,6 +658,18 @@ public final class SpotifyHudClient implements ClientModInitializer {
         panelBottom = bottom;
         panelW = w;
 
+        if (full) {
+            refreshQueueIfNeeded(interactive);
+            int[] pr = peekRectNow(interactive);
+            if (pr != null) {
+                java.util.List<SpotifyApi.Item> q = queueItems;
+                java.util.Set<String> keep = new java.util.HashSet<>();
+                for (int i = 0; i < Math.min(q.size(), cfg.queuePeekCount); i++) keep.add(q.get(i).art());
+                covers.retain(keep);
+                HudPanel.peek(g, font, cfg, art, q, covers, pr);
+            }
+        }
+
         int below = bottom + (interactive ? 94 : 3);
         boolean hasStatus = System.currentTimeMillis() < statusUntil && !status.isEmpty();
         if (hasStatus) {
@@ -621,7 +689,20 @@ public final class SpotifyHudClient implements ClientModInitializer {
                 int lh = HudPanel.lyricsHeight(font, cfg, cur, next, w);
                 int above = y - lh - 2 - cfg.lyricsOffset;
                 int ly = above >= 0 ? above : below + Math.max(0, cfg.lyricsOffset);
-                HudPanel.lyrics(g, font, cfg, art, cur, next, x, ly, w, cfg.alignLyrics);
+                double sinceS = sn.sinceCur();
+                double appear = cur.isEmpty() ? 1 : Math.min(1, sinceS / 420.0);
+                appear = 1 - Math.pow(1 - appear, 3);
+                double flash = cur.isEmpty() || sinceS > 1200 ? 0
+                        : Math.min(1, sinceS / 70.0) * Math.exp(-sinceS / 300.0);
+                double thr = cur.isEmpty() ? 2500 : 7000;
+                double nextFade = Math.max(0, Math.min(1, (thr - sn.untilNext()) / 450.0));
+                double fill = -1;
+                if (!cur.isEmpty()) {
+                    long lineDur = sn.sinceCur() + (sn.untilNext() == Long.MAX_VALUE ? 5000 : sn.untilNext());
+                    double est = Math.min(Math.max(1200.0, cur.length() * 70.0), lineDur * 0.92);
+                    fill = Math.max(0, Math.min(1, sinceS / Math.max(300.0, est)));
+                }
+                HudPanel.lyrics(g, font, cfg, art, cur, next, x, ly, w, cfg.alignLyrics, appear, flash, nextFade, fill);
             }
         }
     }
