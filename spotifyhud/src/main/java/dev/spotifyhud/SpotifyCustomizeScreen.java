@@ -4,7 +4,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,7 +13,13 @@ import java.util.function.IntConsumer;
  * Customization menu: a sidebar with one page per feature (General, Block, CD, Vinyl, Lyrics, Queue, Ambient,
  * Glow, Colors). The HUD stays visible as a live preview.
  */
-public final class SpotifyCustomizeScreen extends BaseScreen {
+public final class SpotifyCustomizeScreen {
+    int width, height;               // set by the host screen each frame
+    private static int posX = Integer.MIN_VALUE, posY = Integer.MIN_VALUE;   // where the user dragged the window
+    net.minecraft.client.gui.screens.Screen host;   // screen this window floats over
+    boolean closed;                  // "Done" pressed: host removes the window
+    private boolean movingWin;
+    private int winOffX, winOffY;
     private static final int[] PRESETS = {-1, 0xFFFFFF, 0xFF4D4D, 0xFF9F43, 0xFFE066, 0x5EE08A, 0x4DE1E8, 0x5B8CFF, 0xA66BFF, 0xFF6BD6, 0x000000};
     private static final String[] PRESET_NAMES = {"Album", "White", "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink", "Black"};
     private static final String[] COLOR_NAMES = {"Text", "Bars", "Glow", "Solid bg", "Lyrics bg", "Lyric fill", "Ambient", "Queue text", "Tonearm"};
@@ -60,9 +65,6 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
     private int linksPage = 0;
     private int menuX, menuY;
 
-    public SpotifyCustomizeScreen() {
-        super(Component.literal("Customize Spotify HUD"));
-    }
 
     // ------------------------------------------------------------ colour accessors
 
@@ -127,7 +129,7 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
                 out.add(button(id++, rx, row(top, 0), "Lyrics: " + onOff(cfg.showLyrics), c::toggleLyrics).p("showLyrics"));
                 out.add(button(id++, rx, row(top, 1), "Shuffle/repeat badge: " + onOff(cfg.modeIndicators),
                         () -> cfg.modeIndicators = !cfg.modeIndicators).p("modeIndicators"));
-                out.add(button(id++, rx, row(top, 2), "Change menu key...", () -> c.openKeybindScreen(this)));
+                out.add(button(id++, rx, row(top, 2), "Change menu key...", () -> c.openKeybindScreen(host)));
                 out.add(note(id++, rx, row(top, 4), "Drag the card or a corner"));
                 out.add(note(id++, rx, row(top, 5), "on the control screen"));
                 out.add(note(id++, rx, row(top, 6), "to move or resize it."));
@@ -241,9 +243,17 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
                     m.label = names[i];
                     out.add(m);
                 }
-                out.add(note(id++, rx, row(top, 5), BeatAudio.status));
-                out.add(note(id++, rx, row(top, 6), cfg.beatEnabled ? "" : "Beat link is off."));
-                out.add(note(id++, rx, row(top, 8), "Windows 10/11 only."));
+                String st = cfg.beatEnabled ? BeatAudio.status : "Beat link is off.";
+                for (int ln = 0; ln < 5 && !st.isEmpty(); ln++) {
+                    int cut = Math.min(st.length(), 23);
+                    if (cut < st.length()) {
+                        int sp = st.lastIndexOf(' ', cut);
+                        if (sp > 8) cut = sp;
+                    }
+                    out.add(note(id++, rx, row(top, 5) + ln * 10, st.substring(0, cut).trim()));
+                    st = st.substring(cut).trim();
+                }
+                out.add(note(id++, lx, row(top, 9), "Windows 10/11 only."));
             }
             case P_LINKS -> {
                 List<Link> all = new ArrayList<>();
@@ -287,7 +297,7 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
             }
         }
 
-        Ctl done = button(id++, menuX + 8, top + ROW_H * ROWS + 2, "Done", this::onClose);
+        Ctl done = button(id++, menuX + 8, top + ROW_H * ROWS + 2, "Done", () -> closed = true);
         done.w = MENU_W - 16;
         out.add(done);
         return out;
@@ -460,8 +470,13 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
 
     private void place(SpotifyHudClient c) {
         int hudCx = c.config.hudX + c.panelW / 2;
-        menuX = hudCx < width / 2 ? width - MENU_W - 10 : 10;
-        menuY = Math.max(6, (height - menuH()) / 2);
+        if (posX == Integer.MIN_VALUE) {
+            menuX = hudCx < width / 2 ? width - MENU_W - 10 : 10;
+            menuY = Math.max(6, (height - menuH()) / 2);
+        } else {
+            menuX = Math.max(0, Math.min(width - MENU_W, posX));
+            menuY = Math.max(0, Math.min(height - menuH(), posY));
+        }
     }
 
     private int tabY(int i) {
@@ -483,11 +498,9 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
 
     // ------------------------------------------------------------ render
 
-    @Override
-    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+    public void render(GuiGraphicsExtractor g, int mouseX, int mouseY) {
         SpotifyHudClient c = SpotifyHudClient.instance;
         if (c == null) return;
-        SpotifyHudClient.forceShowUntil = System.currentTimeMillis() + 300; // keep the HUD visible as a live preview
         place(c);
         Font font = Minecraft.getInstance().font;
         HudPanel.round(g, menuX, menuY, MENU_W, menuH(), 0xE0101010);
@@ -531,13 +544,27 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
 
     // ------------------------------------------------------------ input
 
-    @Override
+    boolean contains(double mx, double my) {
+        return mx >= menuX && mx < menuX + MENU_W && my >= menuY && my < menuY + menuH();
+    }
+
+    boolean busy() {
+        return movingWin || dragging >= 0;
+    }
+
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
         SpotifyHudClient c = SpotifyHudClient.instance;
-        if (c == null) return super.mouseClicked(event, doubleClick);
+        if (c == null) return false;
         place(c);
         double mx = event.x();
         double my = event.y();
+        if (!contains(mx, my)) return false;
+        if (my < menuY + TOP - 4 && !inLinkBtn(mx, my)) {   // title bar: grab to move the window
+            movingWin = true;
+            winOffX = (int) mx - menuX;
+            winOffY = (int) my - menuY;
+            return true;
+        }
         if (inLinkBtn(mx, my)) {
             linkMode = !linkMode;
             if (!linkMode) linkSel = null;
@@ -566,7 +593,7 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
             }
             return true;
         }
-        return super.mouseClicked(event, doubleClick);
+        return true;
     }
 
     private void applySlider(Ctl ctl, double mx) {
@@ -574,10 +601,14 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
         ctl.set.accept((int) Math.round(ctl.min + f * (ctl.max - ctl.min)));
     }
 
-    @Override
     public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
         SpotifyHudClient c = SpotifyHudClient.instance;
-        if (c == null || dragging < 0) return super.mouseDragged(event, dragX, dragY);
+        if (movingWin) {
+            posX = Math.max(0, Math.min(width - MENU_W, (int) event.x() - winOffX));
+            posY = Math.max(0, Math.min(height - menuH(), (int) event.y() - winOffY));
+            return true;
+        }
+        if (c == null || dragging < 0) return false;
         place(c);
         for (Ctl ctl : build(c)) {
             if (ctl.id == dragging && ctl.slider) {
@@ -588,21 +619,22 @@ public final class SpotifyCustomizeScreen extends BaseScreen {
         return true;
     }
 
-    @Override
     public boolean mouseReleased(MouseButtonEvent event) {
         SpotifyHudClient c = SpotifyHudClient.instance;
+        if (movingWin) {
+            movingWin = false;
+            return true;
+        }
         if (dragging >= 0) {
             dragging = -1;
             if (c != null) c.saveConfig();
             return true;
         }
-        return super.mouseReleased(event);
+        return false;
     }
 
-    @Override
-    public void onClose() {
+    void close() {
         SpotifyHudClient c = SpotifyHudClient.instance;
         if (c != null) c.saveConfig();
-        super.onClose();
     }
 }

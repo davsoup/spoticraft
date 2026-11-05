@@ -18,6 +18,7 @@ public final class SpotifyScreen extends BaseScreen {
     private static final int NONE = 0, MOVE = 1, SEEK = 2, VOL = 3, RESIZE = 4, PEEK_MOVE = 5, PEEK_RESIZE = 6;
     private static final int BTN_W = 26, BTN_H = 14, BTN_GAP = 6, HANDLE = 6, PB = 5, PB_GAP = 4;
 
+    private SpotifyCustomizeScreen cust;   // floating Customize window, drawn over this screen
     private int mode = NONE;
     private int offX, offY;
     private double seekFrac;
@@ -118,6 +119,11 @@ public final class SpotifyScreen extends BaseScreen {
 
         String hint = "Drag the card to move  |  drag a corner to resize  |  click or drag the bars  |  Esc to close";
         g.text(font, hint, (width - font.width(hint)) / 2, height - 14, 0xFFCCCCCC, true);
+        if (cust != null) {
+            cust.width = width;
+            cust.height = height;
+            cust.render(g, mouseX, mouseY);
+        }
     }
 
     @Override
@@ -126,6 +132,17 @@ public final class SpotifyScreen extends BaseScreen {
         if (c == null) return super.mouseClicked(event, doubleClick);
         double mx = event.x();
         double my = event.y();
+        if (cust != null) {
+            cust.width = width;
+            cust.height = height;
+            if (cust.mouseClicked(event, doubleClick)) {
+                if (cust.closed) {
+                    cust.close();
+                    cust = null;
+                }
+                return true;
+            }
+        }
         SpotifyConfig cfg = c.config;
         int x = cfg.hudX;
         int y = cfg.hudY;
@@ -214,7 +231,13 @@ public final class SpotifyScreen extends BaseScreen {
         }
         if (inRect(mx, my, x + hw + BTN_GAP, r3, hw, BTN_H)) {
             c.saveConfig();
-            Minecraft.getInstance().gui.setScreen(new SpotifyCustomizeScreen());
+            if (cust == null) {
+                cust = new SpotifyCustomizeScreen();
+                cust.host = this;
+            } else {
+                cust.close();
+                cust = null;
+            }
             return true;
         }
         if (inRect(mx, my, x, r4, hw, BTN_H)) {
@@ -242,6 +265,7 @@ public final class SpotifyScreen extends BaseScreen {
     @Override
     public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
         SpotifyHudClient c = SpotifyHudClient.instance;
+        if (cust != null && cust.busy()) return cust.mouseDragged(event, dragX, dragY);
         if (c == null || mode == NONE) return super.mouseDragged(event, dragX, dragY);
         double mx = event.x();
         double my = event.y();
@@ -306,6 +330,7 @@ public final class SpotifyScreen extends BaseScreen {
     @Override
     public boolean mouseReleased(MouseButtonEvent event) {
         SpotifyHudClient c = SpotifyHudClient.instance;
+        if (cust != null && cust.busy()) return cust.mouseReleased(event);
         if (c != null && mode != NONE) {
             if (mode == PEEK_MOVE) {
                 if (!peekMoved && peekRowDown >= 0) c.skipToQueue(peekRowDown);
@@ -339,6 +364,7 @@ public final class SpotifyScreen extends BaseScreen {
     public void onClose() {
         SpotifyHudClient c = SpotifyHudClient.instance;
         if (c != null) c.saveConfig();
+        if (cust != null) cust.close();
         lastRender = 0;
         super.onClose();
     }

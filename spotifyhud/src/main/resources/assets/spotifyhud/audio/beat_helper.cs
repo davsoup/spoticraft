@@ -49,6 +49,22 @@ public static class SpotifyHudBeat
         [PreserveSig] int GetNextPacketSize(out uint numFrames);
     }
 
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+    public interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, [MarshalAs(UnmanagedType.IUnknown)] out object devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+    public interface IMMDevice
+    {
+        [PreserveSig] int Activate(ref Guid iid, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object iface);
+    }
+
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    public class MMDeviceEnumeratorComObject { }
+
     [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = false)]
     static extern void ActivateAudioInterfaceAsync(
         [In, MarshalAs(UnmanagedType.LPWStr)] string deviceInterfacePath,
@@ -139,7 +155,7 @@ public static class SpotifyHudBeat
         return best == null ? 0 : best.Id;
     }
 
-    static IAudioClient Activate(uint pid, int loopMode)
+    static IAudioClient Activate(uint pid, int loopMode, out Handler hOut)
     {
         IntPtr pParams = Marshal.AllocHGlobal(12);
         IntPtr pVar = Marshal.AllocHGlobal(24);
@@ -153,10 +169,11 @@ public static class SpotifyHudBeat
             Marshal.WriteInt32(pVar, 8, 12);                   // cbSize
             Marshal.WriteIntPtr(pVar, IntPtr.Size == 8 ? 16 : 12, pParams);
             Handler h = new Handler();
+            hOut = h;
             IActivateAudioInterfaceAsyncOperation op;
             Guid iid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
             ActivateAudioInterfaceAsync("VAD\\Process_Loopback", iid, pVar, h, out op);
-            if (!h.Done.WaitOne(5000)) return null;
+            if (!h.Done.WaitOne(5000)) { h.Result = -3; return null; }
             return h.Client;
         }
         finally
@@ -173,7 +190,8 @@ public static class SpotifyHudBeat
     {
         try
         {
-            int rate = 44100;
+            int rate = 44100, chans = 2, bits = 16;
+            bool isFloat = false;
             const int N = 2048;
             double[] re = new double[N], im = new double[N], win = new double[N];
             for (int i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.Cos(2 * Math.PI * i / (N - 1));
@@ -206,27 +224,71 @@ public static class SpotifyHudBeat
                 IntPtr fmt = Marshal.AllocHGlobal(18);
                 Marshal.WriteInt16(fmt, 0, 1);                 // PCM
                 Marshal.WriteInt16(fmt, 2, 2);                 // channels
-                Marshal.WriteInt32(fmt, 4, rate);
-                Marshal.WriteInt32(fmt, 8, rate * 4);
+                Marshal.WriteInt32(fmt, 4, 44100);
+                Marshal.WriteInt32(fmt, 8, 44100 * 4);
                 Marshal.WriteInt16(fmt, 12, 4);                // block align
                 Marshal.WriteInt16(fmt, 14, 16);               // bits
                 Marshal.WriteInt16(fmt, 16, 0);
                 IntPtr evt = CreateEvent(IntPtr.Zero, false, false, null);
-                int lastHr = 0;
+                rate = 44100; chans = 2; isFloat = false; bits = 16;
+                string why = "";
                 int[] flagSets = new int[] { FLAG_LOOPBACK | FLAG_EVENT | FLAG_NOPERSIST,
-                                             FLAG_LOOPBACK | FLAG_EVENT | FLAG_NOPERSIST | FLAG_AUTOCONVERT | FLAG_SRC };
+                                             FLAG_LOOPBACK | FLAG_EVENT | FLAG_NOPERSIST | FLAG_AUTOCONVERT | FLAG_SRC,
+                                             FLAG_LOOPBACK | FLAG_NOPERSIST | FLAG_AUTOCONVERT | FLAG_SRC };
+                bool classic = false;
                 for (int fi = 0; fi < flagSets.Length && client == null; fi++)
                 {
-                    IAudioClient c = Activate(pid, loopMode);
-                    if (c == null) { lastHr = -3; continue; }
-                    int hr = c.Initialize(0, flagSets[fi], 2000000, 0, fmt, IntPtr.Zero);
-                    if (hr < 0) { lastHr = hr; continue; }
-                    c.SetEventHandle(evt);
-                    client = c;
+                    try
+                    {
+                        Handler h;
+                        IAudioClient c = Activate(pid, loopMode, out h);
+                        if (c == null) { why = "activate=" + h.Result.ToString("X"); continue; }
+                        int hr = c.Initialize(0, flagSets[fi], 2000000, 0, fmt, IntPtr.Zero);
+                        if (hr < 0) { why = "init=" + hr.ToString("X"); continue; }
+                        if ((flagSets[fi] & FLAG_EVENT) != 0) c.SetEventHandle(evt);
+                        client = c;
+                    }
+                    catch (Exception ex)
+                    {
+                        why = ex.GetType().Name + " " + ex.Message.Replace('\n', ' ');
+                    }
                 }
                 if (client == null)
                 {
-                    Say("Could not start audio capture (code " + lastHr.ToString("X") + ")");
+                    // Per-app capture isn't available (older Windows, or it was refused): fall back to everything the PC plays.
+                    try
+                    {
+                        IMMDeviceEnumerator en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+                        IMMDevice dev;
+                        int hr0 = en.GetDefaultAudioEndpoint(0, 1, out dev);
+                        if (hr0 < 0) throw new Exception("no output device " + hr0.ToString("X"));
+                        Guid acIid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
+                        object o;
+                        int hr1 = dev.Activate(ref acIid, 23, IntPtr.Zero, out o);
+                        if (hr1 < 0) throw new Exception("device activate " + hr1.ToString("X"));
+                        IAudioClient c = (IAudioClient)o;
+                        IntPtr mix;
+                        int hr2 = c.GetMixFormat(out mix);
+                        if (hr2 < 0) throw new Exception("mix format " + hr2.ToString("X"));
+                        int tag = (ushort)Marshal.ReadInt16(mix, 0);
+                        chans = Marshal.ReadInt16(mix, 2);
+                        rate = Marshal.ReadInt32(mix, 4);
+                        bits = Marshal.ReadInt16(mix, 14);
+                        isFloat = tag == 3;
+                        if (tag == 0xFFFE && Marshal.ReadInt32(mix, 24) == 3) isFloat = true;
+                        int hr3 = c.Initialize(0, FLAG_LOOPBACK, 2000000, 0, mix, IntPtr.Zero);
+                        if (hr3 < 0) throw new Exception("loopback init " + hr3.ToString("X"));
+                        client = c;
+                        classic = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        why += " | fallback: " + ex.Message.Replace('\n', ' ');
+                    }
+                }
+                if (client == null)
+                {
+                    Say("Could not start audio capture (" + why + ")");
                     Marshal.FreeHGlobal(fmt);
                     CloseHandle(evt);
                     Thread.Sleep(4000);
@@ -238,7 +300,7 @@ public static class SpotifyHudBeat
                 client.GetService(ref capIid, out svc);
                 IAudioCaptureClient cap = (IAudioCaptureClient)svc;
                 client.Start();
-                Say(mode == 0 ? "Listening to Spotify" : "Listening to all PC audio");
+                Say(classic ? (mode == 0 ? "Listening to all PC audio (Spotify-only unavailable: " + why + ")" : "Listening to all PC audio") : (mode == 0 ? "Listening to Spotify" : "Listening to all PC audio"));
 
                 Stopwatch since = Stopwatch.StartNew();
                 Stopwatch emit = Stopwatch.StartNew();
@@ -257,12 +319,24 @@ public static class SpotifyHudBeat
                         ulong dp, qp;
                         if (cap.GetBuffer(out data, out nf, out flags, out dp, out qp) < 0) break;
                         int count = (int)nf;
-                        short[] buf = new short[count * 2];
-                        if ((flags & 2) == 0 && count > 0) Marshal.Copy(data, buf, 0, count * 2);
+                        bool silent = (flags & 2) != 0;
+                        int bpf = chans * (bits / 8);
                         for (int i = 0; i < count; i++)
                         {
-                            int m = (buf[i * 2] + buf[i * 2 + 1]) / 2;
-                            ring[ringPos] = (short)m;
+                            double m = 0;
+                            if (!silent)
+                            {
+                                for (int ch = 0; ch < chans; ch++)
+                                {
+                                    int off = i * bpf + ch * (bits / 8);
+                                    if (isFloat) m += BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(data, off)), 0) * 32768.0;
+                                    else if (bits == 16) m += Marshal.ReadInt16(data, off);
+                                    else if (bits == 32) m += Marshal.ReadInt32(data, off) / 65536.0;
+                                    else if (bits == 24) m += (Marshal.ReadInt32(data, off - 1) >> 8) / 256.0;
+                                }
+                                m /= chans;
+                            }
+                            ring[ringPos] = (short)Math.Max(-32768, Math.Min(32767, m));
                             ringPos = (ringPos + 1) % N;
                         }
                         cap.ReleaseBuffer(nf);
@@ -272,7 +346,7 @@ public static class SpotifyHudBeat
                     else if (since.ElapsedMilliseconds > 80)
                     {
                         // nothing playing: feed silence so the signal falls to zero
-                        for (int i = 0; i < 882; i++) { ring[ringPos] = 0; ringPos = (ringPos + 1) % N; }
+                        for (int i = 0; i < rate / 50; i++) { ring[ringPos] = 0; ringPos = (ringPos + 1) % N; }
                         since.Restart();
                     }
 
@@ -298,7 +372,7 @@ public static class SpotifyHudBeat
                             + rms.ToString("0.000000", CultureInfo.InvariantCulture));
                     }
 
-                    if (mode == 0 && Environment.TickCount - lastCheck > 2000)
+                    if (mode == 0 && !classic && Environment.TickCount - lastCheck > 2000)
                     {
                         lastCheck = Environment.TickCount;
                         checkPid = FindSpotify();
