@@ -38,7 +38,7 @@ namespace SpotiCraftOverlay
 
         static void Num(string id, string label, double lo, double hi) { Add(new Def(id, label, K.Int, lo, hi, hi - lo, 0)); }
         static void Flt(string id, string label, double lo, double hi) { Add(new Def(id, label, K.Float, lo, hi, hi - lo, 0)); }
-        static void Pos(string id, string label) { Add(new Def(id, label, K.Int, -400, 8000, 200, 0)); }
+        static void Pos(string id, string label) { Add(new Def(id, label, K.Int, -16000, 16000, 200, 0)); }
         static void Bl(string id, string label) { Add(new Def(id, label, K.Bool, 0, 1, 1, 0)); }
         static void En(string id, string label, int n) { Add(new Def(id, label, K.Enum, 0, n - 1, n, n)); }
         static void Col(string id, string label) { Add(new Def(id, label, K.Color, 0, 0, 1, 0)); }

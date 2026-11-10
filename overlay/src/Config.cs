@@ -30,7 +30,8 @@ namespace SpotiCraftOverlay
 
     /// <summary>
     /// %APPDATA%\SpotiCraftOverlay\config.json. Field names match config/spotifyhud.json from the mod, so mod settings
-    /// and beat links carry over. Positions (hudX/hudY, queuePeekX/Y) are screen pixels here.
+    /// and beat links carry over. Positions (hudX/hudY, queuePeekX/Y) are desktop pixels here
+    /// (primary monitor's top-left is 0,0; monitors to the left/above are negative).
     /// </summary>
     public sealed class OverlayConfig
     {

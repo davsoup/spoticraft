@@ -41,12 +41,12 @@ Every setting can be beat-linked in `config.json` (`links`, same format as the m
 | `hideWhenIdle` | `true` | hide when nothing is playing |
 | `fps` | `60` | |
 
-`hudX`/`hudY` are screen pixels here.
+`hudX`/`hudY` are desktop pixels here (primary monitor's top-left is 0,0).
 
 ## Notes
 
 - Shows over borderless/windowed games, not exclusive fullscreen.
-- Primary monitor only for now.
+- Covers every monitor; drag the card anywhere. If a monitor is unplugged, the card comes back to the primary one.
 
 ## Stages
 

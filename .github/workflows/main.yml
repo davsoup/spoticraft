@@ -60,5 +60,6 @@ jobs:
           V=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' SpotiCraftOverlay.csproj)
           grep -q "Version = \"$V\"" src/Program.cs || { echo "Program.Version doesn't match csproj $V"; exit 1; }
           gh release delete "overlay-v$V" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "overlay-v$V" out/SpotiCraftOverlay.exe --title "SpotiCraft Overlay $V" --latest=false \
+          powershell -NoProfile -Command "Compress-Archive -Force -Path out/SpotiCraftOverlay.exe -DestinationPath out/SpotiCraftOverlay.zip"
+          gh release create "overlay-v$V" out/SpotiCraftOverlay.exe out/SpotiCraftOverlay.zip --title "SpotiCraft Overlay $V" --latest=false \
             --notes "Windows overlay version of the Spotify HUD. Download SpotiCraftOverlay.exe and run it (needs Windows 10/11). Built automatically from $GITHUB_SHA."

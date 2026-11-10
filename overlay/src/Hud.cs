@@ -24,6 +24,8 @@ namespace SpotiCraftOverlay
         public float U = 2f;
         /// <summary>Union of everything drawn this frame (screen pixels).</summary>
         public Rectangle Bounds;
+        /// <summary>Desktop position of the overlay's top-left pixel (left/upper monitors make it negative).</summary>
+        public int OriginX, OriginY;
 
         readonly Dictionary<string, Font> fonts = new Dictionary<string, Font>();
         readonly StringFormat typo;
@@ -45,9 +47,13 @@ namespace SpotiCraftOverlay
 
         // ------------------------------------------------------------ frame setup
 
-        public void Begin(Graphics g, float u)
+        public void Begin(Graphics g, float u) { Begin(g, u, 0, 0); }
+
+        public void Begin(Graphics g, float u, int originX, int originY)
         {
             G = g;
+            OriginX = originX;
+            OriginY = originY;
             U = u;
             Bounds = Rectangle.Empty;
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -106,7 +112,7 @@ namespace SpotiCraftOverlay
         {
             Layout L = GetLayout(cfg);
             float sc = ScaleOf(cfg);
-            return new RectangleF(cfg.hudX / U, cfg.hudY / U, L.W * sc, L.H * sc);
+            return new RectangleF((cfg.hudX - OriginX) / U, (cfg.hudY - OriginY) / U, L.W * sc, L.H * sc);
         }
 
         /// <summary>Corner radius in units for the block card (0 = square).</summary>
@@ -486,10 +492,11 @@ namespace SpotiCraftOverlay
             Mark(cx - 3, cy - 3, 6, 6);
         }
 
-        public void Hint(string text, float screenWUnits, float screenHUnits)
+        /// <summary>Hint pill centred at the bottom of a monitor (monitor rectangle in units).</summary>
+        public void Hint(string text, RectangleF mon)
         {
             float w = Width(text, 1f, false);
-            float x = (screenWUnits - w) / 2, y = screenHUnits - 16;
+            float x = mon.X + (mon.Width - w) / 2, y = mon.Bottom - 16;
             FillRound(x - 6, y - 3, w + 12, 15, unchecked((int)0xA0000000), 3);
             Text(text, x, y, unchecked((int)0xFFDDDDDD), false, 1f, false);
             Mark(x - 6, y - 3, w + 12, 15);

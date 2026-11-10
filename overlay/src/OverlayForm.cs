@@ -52,7 +52,7 @@ namespace SpotiCraftOverlay
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             Text = "SpotiCraft Overlay";
-            Bounds = Screen.PrimaryScreen.Bounds;
+            Bounds = SystemInformation.VirtualScreen;
             KeyPreview = true;
             timer.Tick += (s, e) => Frame();
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s, e) => BeginInvoke((Action)Resized);
@@ -98,10 +98,32 @@ namespace SpotiCraftOverlay
 
         void Resized()
         {
-            Bounds = Screen.PrimaryScreen.Bounds;
+            Bounds = SystemInformation.VirtualScreen; // every monitor
             if (surf != null) surf.Dispose();
             surf = new Surface(Width, Height);
             fullDirty = true;
+            EnsureOnScreen();
+        }
+
+        /// <summary>Brings the card back to the primary monitor if a monitor was unplugged or rearranged.</summary>
+        void EnsureOnScreen()
+        {
+            OverlayConfig cfg = c.Config;
+            var probe = new Rectangle(cfg.hudX, cfg.hudY, 60, 30);
+            foreach (Screen sc in Screen.AllScreens) if (sc.Bounds.IntersectsWith(probe)) return;
+            Rectangle p = Screen.PrimaryScreen.Bounds;
+            cfg.hudX = p.X + 24;
+            cfg.hudY = p.Y + 80;
+            c.Save();
+        }
+
+        /// <summary>Monitor holding most of the card, in units relative to the overlay.</summary>
+        RectangleF CardMonitorUnits()
+        {
+            RectangleF r = panelRect;
+            var desk = new Point((int)((r.X + r.Width / 2) * hud.U) + Left, (int)((r.Y + r.Height / 2) * hud.U) + Top);
+            Rectangle m = Screen.FromPoint(desk).Bounds;
+            return new RectangleF((m.X - Left) / hud.U, (m.Y - Top) / hud.U, m.Width / hud.U, m.Height / hud.U);
         }
 
         float UnitScale()
@@ -229,7 +251,7 @@ namespace SpotiCraftOverlay
             else if (!prevBounds.IsEmpty) surf.Clear(prevBounds, clear);
 
             float u = UnitScale();
-            hud.Begin(g, u);
+            hud.Begin(g, u, Left, Top);
             g.ResetClip();
             try
             {
@@ -262,7 +284,7 @@ namespace SpotiCraftOverlay
             // beat links are applied to a copy; interactive mode draws the real settings so dragging stays exact
             OverlayConfig cfg = interactive ? baseCfg : Mod.Apply(baseCfg, art);
             PlaybackState s = c.State;
-            float x = cfg.hudX / hud.U, y = cfg.hudY / hud.U;
+            float x = (cfg.hudX - Left) / hud.U, y = (cfg.hudY - Top) / hud.U;
             float bottom = y;
             float w = Hud.BLOCK_W;
             bool full = false;
@@ -394,7 +416,7 @@ namespace SpotiCraftOverlay
             }
             string hint = "Drag to move  ·  corners resize  ·  click bars to seek / set volume  ·  Space play/pause  ·  "
                           + "←→ seek  ·  ↑↓ volume  ·  Esc or " + HotkeyLabel + " to close";
-            hud.Hint(hint, surf.W / hud.U, surf.H / hud.U);
+            hud.Hint(hint, CardMonitorUnits());
         }
 
         PointF ToUnits(Point p) { return new PointF(p.X / hud.U, p.Y / hud.U); }
@@ -416,7 +438,7 @@ namespace SpotiCraftOverlay
             PlaybackState s = c.State;
             PointF m = ToUnits(e.Location);
             mouse = m;
-            float x = cfg.hudX / hud.U, w = CtlW, hw = HalfW, x2 = x + hw + BTN_GAP;
+            float x = (cfg.hudX - Left) / hud.U, w = CtlW, hw = HalfW, x2 = x + hw + BTN_GAP;
 
             int k = CornerAt(m);
             if (k >= 0)
@@ -476,7 +498,7 @@ namespace SpotiCraftOverlay
             {
                 drag = MOVE;
                 offX = m.X - x;
-                offY = m.Y - cfg.hudY / hud.U;
+                offY = m.Y - (cfg.hudY - Top) / hud.U;
             }
         }
 
@@ -498,8 +520,10 @@ namespace SpotiCraftOverlay
                 case MOVE:
                 {
                     int nx = (int)Math.Round((m.X - offX) * hud.U), ny = (int)Math.Round((m.Y - offY) * hud.U);
-                    cfg.hudX = Math.Max(-(int)(panelRect.Width * hud.U) + 40, Math.Min(Width - 40, nx));
-                    cfg.hudY = Math.Max(0, Math.Min(Height - 40, ny));
+                    nx = Math.Max(-(int)(panelRect.Width * hud.U) + 40, Math.Min(Width - 40, nx));
+                    ny = Math.Max(0, Math.Min(Height - 40, ny));
+                    cfg.hudX = nx + Left; // stored in desktop pixels
+                    cfg.hudY = ny + Top;
                     break;
                 }
                 case RESIZE:
@@ -511,8 +535,8 @@ namespace SpotiCraftOverlay
                     float nw = L.W * cfg.hudScale, nh = L.H * cfg.hudScale;
                     float left = corner % 2 == 1 ? anchorX : anchorX - nw;
                     float top = corner >= 2 ? anchorY : anchorY - nh;
-                    cfg.hudX = (int)Math.Round(left * hud.U);
-                    cfg.hudY = (int)Math.Round(top * hud.U);
+                    cfg.hudX = (int)Math.Round(left * hud.U) + Left;
+                    cfg.hudY = (int)Math.Round(top * hud.U) + Top;
                     break;
                 }
                 case SEEK:
@@ -520,7 +544,7 @@ namespace SpotiCraftOverlay
                     break;
                 case VOL:
                 {
-                    float x = cfg.hudX / hud.U;
+                    float x = (cfg.hudX - Left) / hud.U;
                     volPct = VolAt(m.X, x, CtlW);
                     long now = Controller.Now();
                     if (now - lastVolSend > 150)
