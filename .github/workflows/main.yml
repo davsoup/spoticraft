@@ -32,3 +32,33 @@ jobs:
           V=$(grep '^mod_version' spotifyhud/gradle.properties | cut -d= -f2)
           gh release delete "v$V" --yes --cleanup-tag 2>/dev/null || true
           gh release create "v$V" spotifyhud/build/libs/spotifyhud-$V.jar --title "spotifyhud $V" --notes "Built automatically"
+
+  overlay:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: overlay
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build exe
+        run: dotnet build SpotiCraftOverlay.csproj -c Release -o out
+      - name: Test (logic + offscreen renders)
+        run: |
+          dotnet build tests/Tests.csproj -c Release -o testbin
+          ./testbin/Tests.exe renders
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SpotiCraftOverlay
+          path: |
+            overlay/out/SpotiCraftOverlay.exe
+            overlay/renders/
+      - name: Publish exe as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' SpotiCraftOverlay.csproj)
+          grep -q "Version = \"$V\"" src/Program.cs || { echo "Program.Version doesn't match csproj $V"; exit 1; }
+          gh release delete "overlay-v$V" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "overlay-v$V" out/SpotiCraftOverlay.exe --title "SpotiCraft Overlay $V" --latest=false \
+            --notes "Windows overlay version of the Spotify HUD. Download SpotiCraftOverlay.exe and run it (needs Windows 10/11). Built automatically from $GITHUB_SHA."
